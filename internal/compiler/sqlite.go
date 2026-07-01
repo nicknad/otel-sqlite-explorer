@@ -28,14 +28,18 @@ var fieldMap = map[string]string{
 	"body":         "body",
 }
 
+// Column list selected from the logs table, in LogRow scan order.
+var logColumns = []string{
+	"id", "timestamp", "severity", "service_name", "trace_id", "span_id", "body",
+}
+
 // Constant SQL fragments.
-const selectAll = "id, timestamp, severity, service_name, trace_id, span_id, body"
-const fromClause = "FROM logs"
+const fromLogs = "FROM logs"
 
 // CompileGetByID builds a parameterized SELECT for a single log row by id.
 func CompileGetByID(id int64) *CompiledQuery {
 	return &CompiledQuery{
-		SQL:  "SELECT " + selectAll + " " + fromClause + " WHERE id = ? LIMIT 1",
+		SQL:  "SELECT " + selectCols(false) + " " + fromLogs + " WHERE id = ? LIMIT 1",
 		Args: []any{id},
 	}
 }
@@ -48,24 +52,51 @@ func CompileGetAttrs(eventID int64) *CompiledQuery {
 	}
 }
 
+// selectCols returns the comma-separated column list, optionally qualified
+// with the `logs.` table alias. Qualification is required when the FTS5
+// index is joined in, because logs_fts also exposes body/service_name.
+func selectCols(qualify bool) string {
+	parts := make([]string, len(logColumns))
+	for i, c := range logColumns {
+		if qualify {
+			parts[i] = "logs." + c
+		} else {
+			parts[i] = c
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 // Compile translates a validated, normalized DSL Query into a parameterized
 // SQLite SELECT statement.
-// The output is deterministic: same input → same SQL and args order.
+//
+// When the WHERE tree contains a MatchExpr (FTS5 full-text search) the query
+// uses a JOIN against logs_fts so the MATCH predicate is evaluated against the
+// full-text index rather than as a full table scan. All logs column references
+// are then qualified with `logs.` to avoid ambiguity with logs_fts columns.
+//
+// The output is deterministic: identical input → identical SQL and arg order.
 func Compile(q *dsl.Query) (*CompiledQuery, error) {
+	matched := dsl.HasMatch(q.Where)
+	c := &exprCompiler{qualify: matched}
+
 	var b strings.Builder
 	var args []any
 
 	// ---- SELECT ----
 	b.WriteString("SELECT ")
-	b.WriteString(selectAll)
+	b.WriteString(selectCols(matched))
 
-	// ---- FROM ----
+	// ---- FROM (with optional FTS5 join) ----
 	b.WriteString(" ")
-	b.WriteString(fromClause)
+	b.WriteString(fromLogs)
+	if matched {
+		b.WriteString(" JOIN logs_fts ON logs.id = logs_fts.rowid")
+	}
 
 	// ---- WHERE ----
 	if q.Where != nil {
-		whereSQL, whereArgs, err := compileExpr(q.Where)
+		whereSQL, whereArgs, err := c.compileExpr(q.Where)
 		if err != nil {
 			return nil, fmt.Errorf("compile where: %w", err)
 		}
@@ -75,13 +106,17 @@ func Compile(q *dsl.Query) (*CompiledQuery, error) {
 	}
 
 	// ---- ORDER BY ----
-	if len(q.Sort) > 0 {
+	switch {
+	case len(q.Sort) > 0:
 		b.WriteString(" ORDER BY ")
 		parts := make([]string, 0, len(q.Sort))
 		for _, s := range q.Sort {
 			col, ok := fieldMap[s.Field]
 			if !ok {
 				return nil, fmt.Errorf("unsupported sort field: %s", s.Field)
+			}
+			if matched {
+				col = "logs." + col
 			}
 			dir := "ASC"
 			if s.Desc {
@@ -90,6 +125,11 @@ func Compile(q *dsl.Query) (*CompiledQuery, error) {
 			parts = append(parts, fmt.Sprintf("%s %s", col, dir))
 		}
 		b.WriteString(strings.Join(parts, ", "))
+	case matched:
+		// No explicit sort + full-text match → rank by relevance (bm25).
+		// bm25 returns more-negative scores for better matches, so ASC
+		// puts the most relevant rows first.
+		b.WriteString(" ORDER BY bm25(logs_fts) ASC")
 	}
 
 	// ---- LIMIT / OFFSET ----
@@ -99,22 +139,44 @@ func Compile(q *dsl.Query) (*CompiledQuery, error) {
 	return &CompiledQuery{SQL: b.String(), Args: args}, nil
 }
 
+// exprCompiler carries compilation context (column qualification) through the
+// expression tree walk.
+type exprCompiler struct {
+	qualify bool
+}
+
+// col returns the SQL column reference for a DSL field, qualified when needed.
+func (c *exprCompiler) col(field string) (string, error) {
+	col, ok := fieldMap[field]
+	if !ok {
+		return "", fmt.Errorf("unsupported field in expression: %s", field)
+	}
+	if c.qualify {
+		return "logs." + col, nil
+	}
+	return col, nil
+}
+
 // compileExpr walks an expression tree and returns SQL + args.
-func compileExpr(e dsl.Expr) (sql string, args []any, err error) {
+func (c *exprCompiler) compileExpr(e dsl.Expr) (sql string, args []any, err error) {
 	switch expr := e.(type) {
 	case dsl.BinaryExpr:
-		return compileBinary(&expr)
+		return c.compileBinary(&expr)
 	case dsl.LogicalExpr:
-		return compileLogical(&expr)
+		return c.compileLogical(&expr)
+	case dsl.MatchExpr:
+		// FTS5 MATCH against the joined index. The JOIN is emitted by Compile
+		// whenever a MatchExpr is present in the tree.
+		return "logs_fts MATCH ?", []any{expr.Query}, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported expression type %T", e)
 	}
 }
 
-func compileBinary(e *dsl.BinaryExpr) (sql string, args []any, err error) {
-	col, ok := fieldMap[e.Field]
-	if !ok {
-		return "", nil, fmt.Errorf("unsupported field in expression: %s", e.Field)
+func (c *exprCompiler) compileBinary(e *dsl.BinaryExpr) (sql string, args []any, err error) {
+	col, err := c.col(e.Field)
+	if err != nil {
+		return "", nil, err
 	}
 
 	switch e.Op {
@@ -159,12 +221,12 @@ func compileBinary(e *dsl.BinaryExpr) (sql string, args []any, err error) {
 	}
 }
 
-func compileLogical(e *dsl.LogicalExpr) (sql string, args []any, err error) {
-	leftSQL, leftArgs, err := compileExpr(e.Left)
+func (c *exprCompiler) compileLogical(e *dsl.LogicalExpr) (sql string, args []any, err error) {
+	leftSQL, leftArgs, err := c.compileExpr(e.Left)
 	if err != nil {
 		return "", nil, err
 	}
-	rightSQL, rightArgs, err := compileExpr(e.Right)
+	rightSQL, rightArgs, err := c.compileExpr(e.Right)
 	if err != nil {
 		return "", nil, err
 	}

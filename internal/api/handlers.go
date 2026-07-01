@@ -68,6 +68,7 @@ type pageData struct {
 	TraceID  string
 	SpanID   string
 	Body     string
+	Search   string // full-text (FTS5) query; maps to a MatchExpr
 	Since    string
 	Limit    int
 	Offset   int
@@ -109,6 +110,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("validation: %v", err), http.StatusBadRequest)
 			return
 		}
+		s.applyFTSFallback(&q)
 		dsl.Normalize(&q)
 		cq, err := compiler.Compile(&q)
 		if err != nil {
@@ -219,6 +221,9 @@ func (s *Server) runQuery(pd *pageData) error {
 	if pd.Body != "" {
 		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpContains, Field: "body", Value: dsl.Value{Type: dsl.ValueString, String: pd.Body}})
 	}
+	if pd.Search != "" {
+		exprs = append(exprs, dsl.MatchExpr{Query: pd.Search})
+	}
 
 	q := dsl.Query{
 		Select: "*",
@@ -233,6 +238,7 @@ func (s *Server) runQuery(pd *pageData) error {
 	if err := dsl.Validate(&q); err != nil {
 		return fmt.Errorf("validation: %w", err)
 	}
+	s.applyFTSFallback(&q)
 	dsl.Normalize(&q)
 
 	// Sync normalized defaults back to page data.
@@ -278,6 +284,7 @@ func pageDataFromForm(r *http.Request) pageData {
 		TraceID:  strings.TrimSpace(r.FormValue("trace_id")),
 		SpanID:   strings.TrimSpace(r.FormValue("span_id")),
 		Body:     strings.TrimSpace(r.FormValue("body")),
+		Search:   strings.TrimSpace(r.FormValue("search")),
 		Since:    r.FormValue("since"),
 		Limit:    100,
 		Offset:   0,
@@ -292,10 +299,22 @@ func pageDataFromForm(r *http.Request) pageData {
 			pd.Offset = n
 		}
 	}
-	if pd.Since == "" {
-		pd.Since = "24h"
+	if pd.Since == "" && !hasFormParams(r) {
+		pd.Since = "24h" // default only on a bare GET /logs with no params
 	}
 	return pd
+}
+
+// hasFormParams reports whether the request carries any filter params,
+// distinguishing a bare page load (apply 24h default) from an explicit
+// "All time" selection (empty since, but other filters present).
+func hasFormParams(r *http.Request) bool {
+	for _, k := range []string{"service_name", "severity", "trace_id", "span_id", "body", "search", "since", "limit", "offset"} {
+		if r.Form.Has(k) {
+			return true
+		}
+	}
+	return false
 }
 
 // andExprs combines a slice of expressions into a single AND tree.
@@ -309,4 +328,15 @@ func andExprs(exprs []dsl.Expr) dsl.Expr {
 		result = dsl.LogicalExpr{Op: dsl.OpAnd, Left: result, Right: e}
 	}
 	return result
+}
+
+// applyFTSFallback rewrites any MatchExpr nodes to body substring matches when
+// the backing database has no logs_fts full-text index. Must run after Validate
+// and before Normalize so default ordering is applied correctly for the
+// fallback path.
+func (s *Server) applyFTSFallback(q *dsl.Query) {
+	if s.db.HasFTS() || q.Where == nil {
+		return
+	}
+	q.Where = dsl.RewriteMatchToContains(q.Where)
 }

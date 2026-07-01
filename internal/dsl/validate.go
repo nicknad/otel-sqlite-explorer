@@ -90,6 +90,15 @@ func validateExpr(e Expr) error {
 		}
 		return nil
 
+	case MatchExpr:
+		if strings.TrimSpace(expr.Query) == "" {
+			return fmt.Errorf("match: query must be non-empty")
+		}
+		if len(expr.Query) > MatchMaxLen {
+			return fmt.Errorf("match: query length %d exceeds maximum of %d", len(expr.Query), MatchMaxLen)
+		}
+		return nil
+
 	default:
 		return fmt.Errorf("unsupported expression type %T", e)
 	}
@@ -99,6 +108,8 @@ func validateExpr(e Expr) error {
 func exprDepth(e Expr) int {
 	switch expr := e.(type) {
 	case BinaryExpr:
+		return 1
+	case MatchExpr:
 		return 1
 	case LogicalExpr:
 		left := exprDepth(expr.Left)

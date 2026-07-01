@@ -12,8 +12,9 @@ import (
 
 // Client holds the read-only SQLite connection.
 type Client struct {
-	db *sql.DB
-	mu sync.Mutex
+	db     *sql.DB
+	mu     sync.Mutex
+	hasFTS bool // true if a logs_fts table is present
 }
 
 // Open opens a read-only connection to the SQLite database at path.
@@ -49,7 +50,13 @@ func Open(path string) (*Client, error) {
 	// Limit to 1 connection to keep things simple
 	db.SetMaxOpenConns(1)
 
-	return &Client{db: db}, nil
+	// Detect whether an FTS5 full-text index (logs_fts) is available.
+	// When absent, MatchExpr nodes are rewritten to body substring matches
+	// by the API layer so the app keeps working on plain databases.
+	var name string
+	_ = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='logs_fts' LIMIT 1").Scan(&name)
+
+	return &Client{db: db, hasFTS: name == "logs_fts"}, nil
 }
 
 // DB returns the underlying *sql.DB for query execution.
@@ -61,4 +68,9 @@ func (c *Client) DB() *sql.DB {
 // Close shuts down the database connection.
 func (c *Client) Close() error {
 	return c.db.Close()
+}
+
+// HasFTS reports whether the database exposes a logs_fts full-text index.
+func (c *Client) HasFTS() bool {
+	return c.hasFTS
 }

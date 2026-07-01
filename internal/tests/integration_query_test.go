@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -11,6 +12,7 @@ import (
 	"log-explorer/internal/compiler"
 	"log-explorer/internal/db"
 	"log-explorer/internal/dsl"
+	"log-explorer/internal/migrate"
 )
 
 func setupTestDB(t *testing.T) string {
@@ -80,6 +82,26 @@ func setupTestDB(t *testing.T) string {
 	}
 
 	conn.Close()
+	return path
+}
+
+// setupTestDBWithFTS is like setupTestDB but also creates and populates an FTS5
+// index (logs_fts) over body and service_name, using the same migrate package
+// the production maintenance tool uses, so MatchExpr queries can be exercised
+// end-to-end. No triggers are created.
+func setupTestDBWithFTS(t *testing.T) string {
+	t.Helper()
+	path := setupTestDB(t)
+
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open for fts: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := migrate.RebuildFTS(conn); err != nil {
+		t.Fatalf("rebuild fts: %v", err)
+	}
 	return path
 }
 
@@ -171,5 +193,132 @@ func TestIntegrationEmptyWhere(t *testing.T) {
 
 	if len(results) != 5 {
 		t.Fatalf("expected 5 rows, got %d", len(results))
+	}
+}
+
+func TestIntegrationFTSMatch(t *testing.T) {
+	path := setupTestDBWithFTS(t)
+	defer os.Remove(path)
+
+	client, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("db open: %v", err)
+	}
+	defer client.Close()
+	if !client.HasFTS() {
+		t.Fatal("expected HasFTS=true")
+	}
+
+	// FTS5 tokenizes "connection timeout to upstream" into [connection, timeout, to, upstream].
+	// Querying "timeout" (a single token) must match that row.
+	input := `{"where": {"match": "timeout"}, "limit": 10}`
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(input), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	dsl.Normalize(&q)
+
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	results, err := client.Execute(cq)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 row matching 'timeout', got %d: %+v", len(results), results)
+	}
+	if !strings.Contains(results[0].Body, "timeout") {
+		t.Errorf("unexpected body: %s", results[0].Body)
+	}
+}
+
+func TestIntegrationFTSHybridMatchStructured(t *testing.T) {
+	path := setupTestDBWithFTS(t)
+	defer os.Remove(path)
+
+	client, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("db open: %v", err)
+	}
+	defer client.Close()
+
+	// Full-text "timeout" AND service_name == "auth-svc" should match nothing
+	// (the timeout row belongs to api-gateway), while "failed" AND auth-svc
+	// should match exactly the token-validation row.
+	input := `{
+		"where": {
+			"and": [
+				{"eq": ["service_name", "auth-svc"]},
+				{"match": "failed"}
+			]
+		},
+		"limit": 10
+	}`
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(input), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	dsl.Normalize(&q)
+
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	results, err := client.Execute(cq)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 hybrid row, got %d: %+v", len(results), results)
+	}
+	if results[0].ServiceName != "auth-svc" || !strings.Contains(results[0].Body, "failed") {
+		t.Errorf("unexpected row: %+v", results[0])
+	}
+}
+
+func TestIntegrationFTSFallbackWithoutIndex(t *testing.T) {
+	// A plain DB (no logs_fts) must fall back match -> body contains.
+	path := setupTestDB(t)
+	defer os.Remove(path)
+
+	client, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("db open: %v", err)
+	}
+	defer client.Close()
+	if client.HasFTS() {
+		t.Fatal("expected HasFTS=false for plain db")
+	}
+
+	q := dsl.Query{
+		Where: dsl.MatchExpr{Query: "timeout"},
+		Limit: 10,
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	q.Where = dsl.RewriteMatchToContains(q.Where)
+	dsl.Normalize(&q)
+
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	results, err := client.Execute(cq)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Body, "timeout") {
+		t.Fatalf("fallback substring match failed, got %d rows: %+v", len(results), results)
 	}
 }

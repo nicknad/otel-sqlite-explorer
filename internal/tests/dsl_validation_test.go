@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"strings"
 	"testing"
 
 	"log-explorer/internal/dsl"
@@ -101,5 +102,49 @@ func TestSelectUnknownFieldIsRejected(t *testing.T) {
 	}
 	if err := dsl.Validate(&q); err == nil {
 		t.Fatal("expected error for unknown select field, got nil")
+	}
+}
+
+func TestMatchEmptyIsRejected(t *testing.T) {
+	q := dsl.Query{
+		Where: dsl.MatchExpr{Query: "   "},
+		Limit: 100,
+	}
+	if err := dsl.Validate(&q); err == nil {
+		t.Fatal("expected error for empty match query, got nil")
+	}
+}
+
+func TestMatchTooLongIsRejected(t *testing.T) {
+	q := dsl.Query{
+		Where: dsl.MatchExpr{Query: strings.Repeat("a", dsl.MatchMaxLen+1)},
+		Limit: 100,
+	}
+	if err := dsl.Validate(&q); err == nil {
+		t.Fatal("expected error for over-long match query, got nil")
+	}
+}
+
+func TestMatchValidIsAllowed(t *testing.T) {
+	q := dsl.Query{
+		Where: dsl.MatchExpr{Query: "timeout gateway"},
+		Limit: 100,
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("expected no error for valid match, got: %v", err)
+	}
+}
+
+func TestMatchInLogicalTreeIsAllowed(t *testing.T) {
+	q := dsl.Query{
+		Where: dsl.LogicalExpr{
+			Op:   dsl.OpAnd,
+			Left: dsl.BinaryExpr{Op: dsl.OpEq, Field: "severity", Value: dsl.Value{Type: dsl.ValueString, String: "ERROR"}},
+			Right: dsl.MatchExpr{Query: "timeout"},
+		},
+		Limit: 100,
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("expected no error for match in logical tree, got: %v", err)
 	}
 }

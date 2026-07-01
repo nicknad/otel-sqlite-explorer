@@ -24,6 +24,7 @@ const (
 	OpContains Op = "contains"
 	OpBetween  Op = "between"
 	OpIn       Op = "in"
+	OpMatch    Op = "match" // FTS5 full-text match (leaf node)
 )
 
 // LogicalOp represents a logical combinator.
@@ -87,6 +88,15 @@ type LogicalExpr struct {
 
 func (LogicalExpr) exprNode() {}
 
+// MatchExpr is a leaf node representing an FTS5 full-text search.
+// It is only valid when the backing database has a logs_fts index; the
+// compiler falls back to a body substring match otherwise.
+type MatchExpr struct {
+	Query string `json:"query"`
+}
+
+func (MatchExpr) exprNode() {}
+
 // ============================================================================
 // Sort and Query
 // ============================================================================
@@ -139,6 +149,22 @@ var AllowedLogicalOps = map[LogicalOp]bool{
 	OpOr:  true,
 }
 
+// MatchMaxLen bounds the FTS5 query string length to prevent abuse.
+const MatchMaxLen = 256
+
+// HasMatch reports whether the expression tree contains a MatchExpr leaf.
+// It is used by Normalize (to skip the default time sort in favour of
+// relevance ranking) and by the compiler (to decide on a JOIN strategy).
+func HasMatch(e Expr) bool {
+	switch x := e.(type) {
+	case MatchExpr:
+		return true
+	case LogicalExpr:
+		return HasMatch(x.Left) || HasMatch(x.Right)
+	}
+	return false
+}
+
 // ============================================================================
 // JSON unmarshalling — supports two wire formats:
 //
@@ -163,6 +189,7 @@ type exprJSON struct {
 	Value     *Value     `json:"value,omitempty"`
 	LogicalOp LogicalOp  `json:"logical_op,omitempty"`
 	Exprs     []exprJSON `json:"exprs,omitempty"`
+	Query     string     `json:"query,omitempty"` // for type "match"
 }
 
 // UnmarshalJSON implements json.Unmarshaler for Query.
@@ -260,6 +287,15 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 			return nil, fmt.Errorf("%s requires exactly 2 sub-expressions, got %d", opKey, len(exprs))
 		}
 		return LogicalExpr{Op: LogicalOp(opKey), Left: exprs[0], Right: exprs[1]}, nil
+	}
+
+	// match is a leaf with a single string value (FTS5 query syntax).
+	if opKey == string(OpMatch) {
+		var s string
+		if err := json.Unmarshal(opVal, &s); err != nil {
+			return nil, fmt.Errorf("match requires a string value")
+		}
+		return MatchExpr{Query: s}, nil
 	}
 
 	// Check comparison operators.
@@ -429,6 +465,8 @@ func exprFromVerbose(j *exprJSON) (Expr, error) {
 			return nil, err
 		}
 		return LogicalExpr{Op: j.LogicalOp, Left: left, Right: right}, nil
+	case "match":
+		return MatchExpr{Query: j.Query}, nil
 	default:
 		return nil, fmt.Errorf("unknown expression type %q", j.Type)
 	}

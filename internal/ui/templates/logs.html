@@ -53,6 +53,25 @@
 <body>
   <h1>🔍 Log Explorer</h1>
 
+  <!-- Full-text search bar (FTS5). Maps to a DSL match node. -->
+  <form class="filters" style="margin-bottom:1rem;"
+        id="search-form"
+        method="get"
+        action="/logs"
+        hx-get="/logs"
+        hx-target="#results"
+        hx-swap="outerHTML"
+        hx-indicator="#spinner"
+        hx-select="#results"
+        hx-push-url="true"
+        hx-include="#log-form">
+    <label style="flex:1; min-width:240px;"> Search (full-text)
+      <input type="text" name="search" placeholder="e.g. timeout gateway" value="{{.Search}}" style="min-width:100%">
+      <small style="color:#8b949e">FTS5: words match independently across body &amp; service</small>
+    </label>
+    <button type="submit">Search</button>
+  </form>
+
   <!-- Filter form — submits via HTMX (swaps tbody + pager) or plain POST. -->
   <form class="filters"
         id="log-form"
@@ -87,6 +106,7 @@
     </label>
     <label> Since
       <select name="since">
+        <option value=""       {{if eq .Since ""}}selected{{end}}>All time</option>
         <option value="1h"   {{if eq .Since "1h"}}selected{{end}}>1 hour</option>
         <option value="6h"   {{if eq .Since "6h"}}selected{{end}}>6 hours</option>
         <option value="24h"  {{if eq .Since "24h"}}selected{{end}}>24 hours</option>

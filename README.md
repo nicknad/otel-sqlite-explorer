@@ -1,7 +1,7 @@
 # Log Explorer
 
 A read-only web UI for querying OpenTelemetry logs stored in SQLite. It pairs
-with an [OTLP SQLite Collector](https://github.com/) but works with any SQLite
+with the [otel-sqlite](https://codeberg.org/nicknad/otel-sqlite) collector but works with any SQLite
 database that exposes a `logs` view/table with the columns below.
 
 ## Features
@@ -11,8 +11,13 @@ database that exposes a `logs` view/table with the columns below.
   whitelists, normalized, then compiled to parameterized SQL.
 - **SQL-injection-safe** — every value is a `?` placeholder; field names and
   operators are checked against fixed whitelists.
+- **Full-text search (FTS5)** — tokenized, relevance-ranked search over log
+  body and service name via a contentless FTS5 index, combined with structured
+  filters in a single query (hybrid search). Falls back to substring match on
+  databases without the index.
 - **Read-only by design** — the SQLite connection opens in `mode=ro` with
-  `PRAGMA query_only = ON`.
+  `PRAGMA query_only = ON`. The FTS index is built by a separate maintenance
+  tool, never the sidecar.
 - **Web UI** — dark-themed, HTMX-powered table with filter form, pagination,
   and a per-log detail page showing the full OTel payload (body + attributes).
 - **JSON API** — `POST /logs/query` accepts a JSON DSL query and returns JSON
@@ -64,6 +69,24 @@ go build -o bin/log-explorer ./cmd/server
 ```
 
 Then open <http://localhost:8080/logs>.
+
+### Full-text search setup (FTS5)
+
+The sidecar is read-only, so the FTS5 index is built by a separate
+maintenance tool with write access:
+
+```bash
+go build -o bin/migrate-fts ./cmd/migrate-fts
+./bin/migrate-fts -db /path/to/otel-logs.db            # create + rebuild index
+./bin/migrate-fts -db /path/to/otel-logs.db -stats     # report index stats
+./bin/migrate-fts -db /path/to/otel-logs.db -stats -probe "timeout gateway"
+```
+
+The index is a contentless FTS5 table (`logs_fts`) over `body` and
+`service_name`, with `rowid = logs.id`. No triggers are used; rerun the
+rebuild after new ingestion to refresh the index. The sidecar detects the
+index at startup and enables `match` queries; without it, `match` falls back
+to a `body LIKE '%...%'` substring search.
 
 ### Flags
 
@@ -169,6 +192,32 @@ object whose key is the operator.
 }
 ```
 
+**Full-text match** — `{"match": "query string"}` (leaf node, FTS5 syntax):
+
+```json
+{"match": "timeout gateway"}
+```
+
+The match node uses SQLite FTS5 query syntax (tokens are AND-ed by default;
+use `OR` / `NOT` / `*` for advanced queries). It is only valid on databases
+with a `logs_fts` index; otherwise it falls back to a body substring match.
+Max query length is 256 characters.
+
+A hybrid query combining full-text and structured filters:
+
+```json
+{
+  "where": {
+    "and": [
+      {"eq": ["service_name", "api-gateway"]},
+      {"match": "timeout OR connection refused"}
+    ]
+  },
+  "since": "1h",
+  "limit": 50
+}
+```
+
 **Top-level fields:**
 
 | Field    | Type     | Description                                  |
@@ -207,12 +256,14 @@ Only `internal/compiler` constructs SQL. Only `internal/db` touches
 | Package                     | Responsibility                                   |
 |-----------------------------|--------------------------------------------------|
 | `cmd/server`                | Entry point, flags, graceful shutdown            |
+| `cmd/migrate-fts`           | FTS5 index maintenance tool (rebuild/stats/probe)|
 | `internal/api`              | HTTP handlers, form/JSON → DSL, pagination       |
 | `internal/dsl`              | Query types, JSON unmarshalling, validation      |
 | `internal/compiler`         | DSL → parameterized SQLite SQL                   |
 | `internal/db`               | Read-only SQLite client, row/attr scanning       |
+| `internal/migrate`          | FTS5 index creation + rebuild (write access)     |
 | `internal/ui`               | Embedded HTML templates                          |
-| `internal/tests`            | Validation, compiler, and integration tests     |
+| `internal/tests`            | Validation, compiler, FTS, and integration tests |
 
 ## Development
 
