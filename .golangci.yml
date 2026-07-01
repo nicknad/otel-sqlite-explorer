@@ -1,0 +1,72 @@
+version: "2"
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
+linters:
+  enable:
+    - gocritic
+    - gosec
+    - lll
+    - misspell
+    - nakedret
+    - staticcheck
+    - unconvert
+    - whitespace
+  settings:
+    gocritic:
+      disabled-checks:
+        - commentFormatting
+        - whyNoLint
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+    lll:
+      line-length: 120
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gosec
+        path: _test\.go
+      - linters:
+          - all
+        path: internal/generated/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+severity:
+  default: error
+  rules:
+    - linters:
+        - staticcheck
+      severity: warning
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/nnadolski/otel-sqlite
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
