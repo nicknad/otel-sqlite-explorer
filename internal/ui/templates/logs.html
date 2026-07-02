@@ -114,6 +114,12 @@
         <option value="168h" {{if eq .Since "168h"}}selected{{end}}>7 days</option>
       </select>
     </label>
+    <label> From
+      <input type="datetime-local" name="date_from" value="{{.DateFrom}}">
+    </label>
+    <label> To
+      <input type="datetime-local" name="date_to" value="{{.DateTo}}">
+    </label>
     <label> Limit
       <input type="number" name="limit" value="{{.Limit}}" min="1" max="1000" style="width:80px">
     </label>

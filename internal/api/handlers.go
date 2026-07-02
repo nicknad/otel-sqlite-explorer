@@ -70,6 +70,8 @@ type pageData struct {
 	Body     string
 	Search   string // full-text (FTS5) query; maps to a MatchExpr
 	Since    string
+	DateFrom string // RFC3339 / datetime-local start (inclusive)
+	DateTo   string // RFC3339 / datetime-local end (inclusive)
 	Limit    int
 	Offset   int
 	HasPrev  bool
@@ -221,6 +223,21 @@ func (s *Server) runQuery(pd *pageData) error {
 	if pd.Body != "" {
 		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpContains, Field: "body", Value: dsl.Value{Type: dsl.ValueString, String: pd.Body}})
 	}
+	// Date range filters — convert to timestamp nanoseconds for DSL.
+	if pd.DateFrom != "" {
+		ts, err := parseDateTime(pd.DateFrom)
+		if err == nil {
+			exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpGte, Field: "timestamp", Value: dsl.Value{Type: dsl.ValueInt, Int: ts}})
+		}
+	}
+	if pd.DateTo != "" {
+		ts, err := parseDateTime(pd.DateTo)
+		if err == nil {
+			// End of the given day (add 24h) when only a date was entered;
+			// parseDateTime already handles this by appending 23:59:59.
+			exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpLte, Field: "timestamp", Value: dsl.Value{Type: dsl.ValueInt, Int: ts}})
+		}
+	}
 	if pd.Search != "" {
 		exprs = append(exprs, dsl.MatchExpr{Query: pd.Search})
 	}
@@ -286,6 +303,8 @@ func pageDataFromForm(r *http.Request) pageData {
 		Body:     strings.TrimSpace(r.FormValue("body")),
 		Search:   strings.TrimSpace(r.FormValue("search")),
 		Since:    r.FormValue("since"),
+		DateFrom: strings.TrimSpace(r.FormValue("date_from")),
+		DateTo:   strings.TrimSpace(r.FormValue("date_to")),
 		Limit:    100,
 		Offset:   0,
 	}
@@ -309,12 +328,35 @@ func pageDataFromForm(r *http.Request) pageData {
 // distinguishing a bare page load (apply 24h default) from an explicit
 // "All time" selection (empty since, but other filters present).
 func hasFormParams(r *http.Request) bool {
-	for _, k := range []string{"service_name", "severity", "trace_id", "span_id", "body", "search", "since", "limit", "offset"} {
+	for _, k := range []string{"service_name", "severity", "trace_id", "span_id", "body", "search", "since", "date_from", "date_to", "limit", "offset"} {
 		if r.Form.Has(k) {
 			return true
 		}
 	}
 	return false
+}
+
+// parseDateTime parses a date or datetime string from the HTML form and returns
+// the corresponding epoch nanoseconds (UTC). Supported formats:
+//   - "2006-01-02T15:04"   (datetime-local, local time, stored as UTC)
+//   - "2006-01-02"         (date only, treated as end-of-day 23:59:59)
+//   - RFC3339 / RFC3339Nano (e.g. "2024-01-15T14:30:00Z")
+func parseDateTime(s string) (int64, error) {
+	// Try RFC3339 first (with or without TZ).
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04"} {
+		t, err := time.Parse(layout, s)
+		if err == nil {
+			return t.UTC().UnixNano(), nil
+		}
+	}
+	// Date only — treat as end of that day (23:59:59 UTC).
+	t, err := time.Parse("2006-01-02", s)
+	if err == nil {
+		// End of day: 23:59:59.999999999 UTC
+		endOfDay := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
+		return endOfDay.UnixNano(), nil
+	}
+	return 0, fmt.Errorf("cannot parse date: %q", s)
 }
 
 // andExprs combines a slice of expressions into a single AND tree.
