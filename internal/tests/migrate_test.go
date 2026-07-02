@@ -29,11 +29,11 @@ func setupPlainDB(t *testing.T) (string, *sql.DB) {
 	}
 	if _, err := conn.Exec(`CREATE TABLE logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		timestamp INTEGER,
-		severity TEXT,
+		timestamp_ns INTEGER,
+		severity_text TEXT,
 		service_name TEXT,
-		trace_id TEXT,
-		span_id TEXT,
+		trace_id BLOB,
+		span_id BLOB,
 		body TEXT
 	)`); err != nil {
 		conn.Close()
@@ -49,7 +49,7 @@ func setupPlainDB(t *testing.T) (string, *sql.DB) {
 	}
 	for _, r := range rows {
 		if _, err := conn.Exec(
-			"INSERT INTO logs (timestamp, severity, service_name, body) VALUES (?,?,?,?)",
+			"INSERT INTO logs (timestamp_ns, severity_text, service_name, body) VALUES (?,?,?,?)",
 			r.ts, r.sev, r.svc, r.body,
 		); err != nil {
 			conn.Close()
@@ -116,7 +116,7 @@ func TestMigrateRebuildDetectsDriftAfterInsert(t *testing.T) {
 	// Insert a new log with a distinctive token WITHOUT touching the FTS
 	// index (no triggers exist). Its token must NOT be findable via MATCH.
 	if _, err := conn.Exec(
-		"INSERT INTO logs (timestamp, severity, service_name, body) VALUES (?,?,?,?)",
+		"INSERT INTO logs (timestamp_ns, severity_text, service_name, body) VALUES (?,?,?,?)",
 		"4", "ERROR", "api-gateway", "new zzz_drift_token error",
 	); err != nil {
 		t.Fatalf("insert: %v", err)

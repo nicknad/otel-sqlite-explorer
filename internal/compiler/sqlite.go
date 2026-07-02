@@ -17,20 +17,43 @@ type CompiledQuery struct {
 }
 
 // fieldMap translates DSL field names to SQL column expressions.
-// For the flat `logs` table the mapping is direct.
+// The values match the column names exposed by the `logs` view in the
+// otel-sqlite schema. BLOB columns (trace_id, span_id) are wrapped with
+// hex() at the expression level — see colExpr and selectCols.
 var fieldMap = map[string]string{
 	"id":           "id",
-	"timestamp":    "timestamp",
-	"severity":     "severity",
+	"timestamp":    "timestamp_ns",
+	"severity":     "severity_text",
 	"service_name": "service_name",
 	"trace_id":     "trace_id",
 	"span_id":      "span_id",
 	"body":         "body",
 }
 
-// Column list selected from the logs table, in LogRow scan order.
+// colExpr returns the SQL column expression for a DSL field, optionally
+// qualified with the logs table alias for FTS5 JOIN disambiguation.
+// BLOB columns (trace_id, span_id) are wrapped with hex() so string
+// comparisons and scanning into Go strings work correctly.
+func colExpr(field string, qualify bool) (string, error) {
+	col, ok := fieldMap[field]
+	if !ok {
+		return "", fmt.Errorf("unsupported field: %s", field)
+	}
+	if qualify {
+		col = "logs." + col
+	}
+	switch field {
+	case "trace_id", "span_id":
+		col = "hex(" + col + ")"
+	}
+	return col, nil
+}
+
+// logColumns defines the column names from the `logs` view, in LogRow
+// scan order. These are used to build the SELECT list; BLOB columns
+// (trace_id, span_id) are wrapped with hex() by selectCols.
 var logColumns = []string{
-	"id", "timestamp", "severity", "service_name", "trace_id", "span_id", "body",
+	"id", "timestamp_ns", "severity_text", "service_name", "trace_id", "span_id", "body",
 }
 
 // Constant SQL fragments.
@@ -55,14 +78,20 @@ func CompileGetAttrs(eventID int64) *CompiledQuery {
 // selectCols returns the comma-separated column list, optionally qualified
 // with the `logs.` table alias. Qualification is required when the FTS5
 // index is joined in, because logs_fts also exposes body/service_name.
+// BLOB columns (trace_id, span_id) are wrapped with hex() so they scan
+// as hex-encoded text strings in Go.
 func selectCols(qualify bool) string {
 	parts := make([]string, len(logColumns))
 	for i, c := range logColumns {
+		expr := c
 		if qualify {
-			parts[i] = "logs." + c
-		} else {
-			parts[i] = c
+			expr = "logs." + expr
 		}
+		switch c {
+		case "trace_id", "span_id":
+			expr = "hex(" + expr + ")"
+		}
+		parts[i] = expr
 	}
 	return strings.Join(parts, ", ")
 }
@@ -111,12 +140,9 @@ func Compile(q *dsl.Query) (*CompiledQuery, error) {
 		b.WriteString(" ORDER BY ")
 		parts := make([]string, 0, len(q.Sort))
 		for _, s := range q.Sort {
-			col, ok := fieldMap[s.Field]
-			if !ok {
-				return nil, fmt.Errorf("unsupported sort field: %s", s.Field)
-			}
-			if matched {
-				col = "logs." + col
+			col, err := colExpr(s.Field, matched)
+			if err != nil {
+				return nil, fmt.Errorf("unsupported sort field: %s: %w", s.Field, err)
 			}
 			dir := "ASC"
 			if s.Desc {
@@ -146,15 +172,10 @@ type exprCompiler struct {
 }
 
 // col returns the SQL column reference for a DSL field, qualified when needed.
+// BLOB fields (trace_id, span_id) are wrapped with hex() so string comparisons
+// against the view's BLOB columns work correctly.
 func (c *exprCompiler) col(field string) (string, error) {
-	col, ok := fieldMap[field]
-	if !ok {
-		return "", fmt.Errorf("unsupported field in expression: %s", field)
-	}
-	if c.qualify {
-		return "logs." + col, nil
-	}
-	return col, nil
+	return colExpr(field, c.qualify)
 }
 
 // compileExpr walks an expression tree and returns SQL + args.

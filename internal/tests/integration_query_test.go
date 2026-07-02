@@ -34,11 +34,11 @@ func setupTestDB(t *testing.T) string {
 
 	schema := `CREATE TABLE logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		timestamp INTEGER,
-		severity TEXT,
+		timestamp_ns INTEGER,
+		severity_text TEXT,
 		service_name TEXT,
-		trace_id TEXT,
-		span_id TEXT,
+		trace_id BLOB,
+		span_id BLOB,
 		body TEXT
 	);`
 
@@ -71,8 +71,8 @@ func setupTestDB(t *testing.T) string {
 
 	for _, r := range rows {
 		_, err := conn.Exec(
-			"INSERT INTO logs (timestamp, severity, service_name, trace_id, span_id, body) VALUES (?, ?, ?, ?, ?, ?)",
-			r.ts, r.severity, r.serviceName, r.traceID, r.spanID, r.body,
+			"INSERT INTO logs (timestamp_ns, severity_text, service_name, trace_id, span_id, body) VALUES (?, ?, ?, ?, ?, ?)",
+			r.ts, r.severity, r.serviceName, []byte(r.traceID), []byte(r.spanID), r.body,
 		)
 		if err != nil {
 			conn.Close()

@@ -37,11 +37,11 @@ func TestCompilerDeterminism(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	// Expected: normalized adds default ORDER BY timestamp DESC.
+	// Expected: normalized adds default ORDER BY timestamp_ns DESC.
 	// Logical expressions are wrapped in parentheses by the compiler.
-	expectedSQL := "SELECT id, timestamp, severity, service_name, trace_id, span_id, body " +
+	expectedSQL := "SELECT id, timestamp_ns, severity_text, service_name, hex(trace_id), hex(span_id), body " +
 		"FROM logs WHERE (service_name = ? AND body LIKE ?) " +
-		"ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+		"ORDER BY timestamp_ns DESC LIMIT ? OFFSET ?"
 	expectedArgs := []any{"api", "%timeout%", 100, 0}
 
 	if cq.SQL != expectedSQL {
@@ -131,7 +131,7 @@ func TestCompilerMatchCompilesToFTS(t *testing.T) {
 	if !strings.Contains(cq.SQL, "ORDER BY bm25(logs_fts) ASC") {
 		t.Errorf("expected bm25 ranking, got: %s", cq.SQL)
 	}
-	if !strings.Contains(cq.SQL, "logs.id, logs.timestamp") {
+	if !strings.Contains(cq.SQL, "logs.id, logs.timestamp_ns") {
 		t.Errorf("expected qualified columns, got: %s", cq.SQL)
 	}
 	expectedArgs := []any{"timeout gateway", 50, 0}
