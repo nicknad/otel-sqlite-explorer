@@ -123,13 +123,14 @@ type Query struct {
 // ============================================================================
 
 var AllowedFields = map[string]bool{
-	"id":           true,
-	"timestamp":    true,
-	"severity":     true,
-	"service_name": true,
-	"trace_id":     true,
-	"span_id":      true,
-	"body":         true,
+	"id":              true,
+	"timestamp":       true,
+	"severity":        true,
+	"severity_number": true,
+	"service_name":    true,
+	"trace_id":        true,
+	"span_id":         true,
+	"body":            true,
 }
 
 var AllowedOps = map[Op]bool{

@@ -21,13 +21,14 @@ type CompiledQuery struct {
 // otel-sqlite schema. BLOB columns (trace_id, span_id) are wrapped with
 // hex() at the expression level — see colExpr and selectCols.
 var fieldMap = map[string]string{
-	"id":           "id",
-	"timestamp":    "timestamp_ns",
-	"severity":     "severity_text",
-	"service_name": "service_name",
-	"trace_id":     "trace_id",
-	"span_id":      "span_id",
-	"body":         "body",
+	"id":              "id",
+	"timestamp":       "timestamp_ns",
+	"severity":        "severity_text",
+	"severity_number": "severity_number",
+	"service_name":    "service_name",
+	"trace_id":        "trace_id",
+	"span_id":         "span_id",
+	"body":            "body",
 }
 
 // colExpr returns the SQL column expression for a DSL field, optionally

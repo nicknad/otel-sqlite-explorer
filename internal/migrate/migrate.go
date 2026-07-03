@@ -13,7 +13,7 @@ import (
 
 // SchemaSQL creates the FTS5 full-text index over the log content.
 //
-// A contentless FTS5 table (content='') is used so the index can be built
+// A contentless FTS5 table (content=”) is used so the index can be built
 // from a VIEW (the project's `logs` view joining log_event + log_resource)
 // rather than requiring a real base table with a rowid. The index stores only
 // tokens; rowids are supplied explicitly as the logs.id value during rebuild.

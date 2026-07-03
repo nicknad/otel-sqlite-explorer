@@ -138,8 +138,8 @@ func TestMatchValidIsAllowed(t *testing.T) {
 func TestMatchInLogicalTreeIsAllowed(t *testing.T) {
 	q := dsl.Query{
 		Where: dsl.LogicalExpr{
-			Op:   dsl.OpAnd,
-			Left: dsl.BinaryExpr{Op: dsl.OpEq, Field: "severity", Value: dsl.Value{Type: dsl.ValueString, String: "ERROR"}},
+			Op:    dsl.OpAnd,
+			Left:  dsl.BinaryExpr{Op: dsl.OpEq, Field: "severity", Value: dsl.Value{Type: dsl.ValueString, String: "ERROR"}},
 			Right: dsl.MatchExpr{Query: "timeout"},
 		},
 		Limit: 100,

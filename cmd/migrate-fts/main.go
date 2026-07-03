@@ -72,7 +72,8 @@ func main() {
 		log.Fatalf("rebuild: %v", err)
 	}
 	fmt.Println("FTS5 index rebuilt successfully.")
-	printStats(s)}
+	printStats(s)
+}
 
 func printStats(s migrate.FTSStats) {
 	fmt.Printf("  logs table rows : %d\n", s.LogsCount)

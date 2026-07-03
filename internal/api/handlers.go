@@ -212,7 +212,12 @@ func (s *Server) runQuery(pd *pageData) error {
 		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpContains, Field: "service_name", Value: dsl.Value{Type: dsl.ValueString, String: pd.Service}})
 	}
 	if pd.Severity != "" {
-		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpEq, Field: "severity", Value: dsl.Value{Type: dsl.ValueString, String: strings.ToUpper(pd.Severity)}})
+		threshold := severityNumberThreshold(pd.Severity)
+		exprs = append(exprs, dsl.BinaryExpr{
+			Op:    dsl.OpGte,
+			Field: "severity_number",
+			Value: dsl.Value{Type: dsl.ValueInt, Int: threshold},
+		})
 	}
 	if pd.TraceID != "" {
 		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpEq, Field: "trace_id", Value: dsl.Value{Type: dsl.ValueString, String: pd.TraceID}})
@@ -357,6 +362,27 @@ func parseDateTime(s string) (int64, error) {
 		return endOfDay.UnixNano(), nil
 	}
 	return 0, fmt.Errorf("cannot parse date: %q", s)
+}
+
+// severityNumberThreshold maps a user-visible severity label to the
+// corresponding OTel severity_number threshold for "this level and above"
+// filtering (OpGte). Thresholds match the iota values defined in
+// otel-sqlite/internal/model/logrecord.go:
+//
+//	Debug=5, Info=9, Warn=13, Error=17, Fatal=21
+func severityNumberThreshold(severity string) int64 {
+	switch strings.ToUpper(strings.TrimSpace(severity)) {
+	case "DEBUG":
+		return 5
+	case "INFO":
+		return 9
+	case "WARN":
+		return 13
+	case "ERROR":
+		return 17
+	default:
+		return 0
+	}
 }
 
 // andExprs combines a slice of expressions into a single AND tree.
