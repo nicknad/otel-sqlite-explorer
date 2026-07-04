@@ -44,11 +44,17 @@ func main() {
 	// Create API server with embedded templates.
 	srv, err := api.NewServer(database)
 	if err != nil {
-		database.Close()
+		if closeErr := database.Close(); closeErr != nil {
+			log.Printf("close database: %v", closeErr)
+		}
 		log.Fatalf("create server: %v", err)
 	}
 
-	defer database.Close()
+	defer func() {
+		if err := database.Close(); err != nil {
+			log.Printf("close database: %v", err)
+		}
+	}()
 
 	// Set up routes.
 	mux := http.NewServeMux()
@@ -74,5 +80,7 @@ func main() {
 
 	<-quit
 	log.Println("shutting down...")
-	httpSrv.Close()
+	if err := httpSrv.Close(); err != nil {
+		log.Printf("http server close: %v", err)
+	}
 }

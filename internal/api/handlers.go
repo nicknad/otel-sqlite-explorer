@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -83,15 +84,12 @@ type pageData struct {
 // ============================================================================
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	// Read filters from URL query params so reloads / shared URLs preserve state.
-	// When no params are present, pageDataFromForm applies the defaults.
 	pd := pageDataFromForm(r)
 	if err := s.runQuery(&pd); err != nil {
-		log.Printf("default query error: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	s.renderLogsPage(w, pd)
+	s.renderLogsPage(w, &pd)
 }
 
 // ============================================================================
@@ -127,12 +125,16 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		accept := r.Header.Get("Accept")
 		if strings.Contains(accept, "application/json") {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			json.NewEncoder(w).Encode(rows)
+			if err := json.NewEncoder(w).Encode(rows); err != nil {
+				log.Printf("encode JSON: %v", err)
+			}
 			return
 		}
 		// JSON in, HTML rows out (partial).
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		s.tmpls.ExecuteTemplate(w, "rows", map[string]any{"Logs": rows})
+		if err := s.tmpls.ExecuteTemplate(w, "rows", map[string]any{"Logs": rows}); err != nil {
+			log.Printf("template: %v", err)
+		}
 		return
 	}
 
@@ -146,11 +148,11 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	// Both HTMX and plain-POST get the full page. HTMX extracts #results
 	// via hx-select and swaps it in; plain POST re-renders the whole page.
-	s.renderLogsPage(w, pd)
+	s.renderLogsPage(w, &pd)
 }
 
 // renderLogsPage writes the full logs.html page.
-func (s *Server) renderLogsPage(w http.ResponseWriter, pd pageData) {
+func (s *Server) renderLogsPage(w http.ResponseWriter, pd *pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpls.ExecuteTemplate(w, "logs.html", pd); err != nil {
 		log.Printf("template error: %v", err)
@@ -270,10 +272,7 @@ func (s *Server) runQuery(pd *pageData) error {
 
 	// Query one extra row to detect a next page.
 	probe := q
-	probe.Limit = q.Limit + 1
-	if probe.Limit > dsl.MaxLimit+1 {
-		probe.Limit = dsl.MaxLimit + 1
-	}
+	probe.Limit = min(q.Limit+1, dsl.MaxLimit+1)
 	cq, err := compiler.Compile(&probe)
 	if err != nil {
 		return fmt.Errorf("compile: %w", err)
@@ -333,12 +332,7 @@ func pageDataFromForm(r *http.Request) pageData {
 // distinguishing a bare page load (apply 24h default) from an explicit
 // "All time" selection (empty since, but other filters present).
 func hasFormParams(r *http.Request) bool {
-	for _, k := range []string{"service_name", "severity", "trace_id", "span_id", "body", "search", "since", "date_from", "date_to", "limit", "offset"} {
-		if r.Form.Has(k) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc([]string{"service_name", "severity", "trace_id", "span_id", "body", "search", "since", "date_from", "date_to", "limit", "offset"}, r.Form.Has)
 }
 
 // parseDateTime parses a date or datetime string from the HTML form and returns

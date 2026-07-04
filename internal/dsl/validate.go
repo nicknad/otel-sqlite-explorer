@@ -1,6 +1,7 @@
 package dsl
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -17,7 +18,7 @@ func Validate(q *Query) error {
 	// --- Select ---
 	sel := strings.TrimSpace(q.Select)
 	if sel != "" && sel != "*" {
-		for _, f := range strings.Split(sel, ",") {
+		for f := range strings.SplitSeq(sel, ",") {
 			f = strings.TrimSpace(f)
 			if f == "" {
 				continue
@@ -92,7 +93,7 @@ func validateExpr(e Expr) error {
 
 	case MatchExpr:
 		if strings.TrimSpace(expr.Query) == "" {
-			return fmt.Errorf("match: query must be non-empty")
+			return errors.New("match: query must be non-empty")
 		}
 		if len(expr.Query) > MatchMaxLen {
 			return fmt.Errorf("match: query length %d exceeds maximum of %d", len(expr.Query), MatchMaxLen)
@@ -127,14 +128,14 @@ func validateValue(op Op, v *Value) error {
 	switch op {
 	case OpBetween:
 		if v.Min == nil || v.Max == nil {
-			return fmt.Errorf("between requires min and max")
+			return errors.New("between requires min and max")
 		}
 		if v.Min.Type != v.Max.Type {
 			return fmt.Errorf("between min/max type mismatch: %s vs %s", v.Min.Type, v.Max.Type)
 		}
 	case OpIn:
 		if len(v.List) == 0 {
-			return fmt.Errorf("in requires at least one value")
+			return errors.New("in requires at least one value")
 		}
 		// all list elements must have the same type
 		for i, item := range v.List {
@@ -144,7 +145,7 @@ func validateValue(op Op, v *Value) error {
 		}
 	default:
 		if v.Type == "" {
-			return fmt.Errorf("value type is required")
+			return errors.New("value type is required")
 		}
 	}
 	return nil

@@ -16,16 +16,16 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 
-	"database/sql"
+	"log-explorer/internal/migrate"
 
 	_ "modernc.org/sqlite"
-
-	"log-explorer/internal/migrate"
 )
 
 func main() {
@@ -45,31 +45,33 @@ func main() {
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		log.Fatalf("set busy_timeout: %v", err)
+	var pragmaErr error
+	_, pragmaErr = db.ExecContext(context.Background(), "PRAGMA busy_timeout = 5000")
+	if pragmaErr != nil {
+		log.Fatalf("set busy_timeout: %v", pragmaErr)
 	}
 
 	if *statsOnly {
-		s, err := migrate.Stats(db)
-		if err != nil {
-			log.Fatalf("stats: %v", err)
+		s, statsErr := migrate.Stats(db)
+		if statsErr != nil {
+			log.Fatalf("stats: %v", statsErr)
 		}
 		printStats(s)
 		if *probe != "" {
-			n, err := migrate.ProbeToken(db, *probe)
-			if err != nil {
-				log.Fatalf("probe: %v", err)
+			n, probeErr := migrate.ProbeToken(db, *probe)
+			if probeErr != nil {
+				log.Fatalf("probe: %v", probeErr)
 			}
 			fmt.Printf("  probe %-9q : %d rows matched\n", *probe, n)
 		}
 		return
 	}
 
-	s, err := migrate.RebuildFTS(db)
-	if err != nil {
-		log.Fatalf("rebuild: %v", err)
+	s, rebuildErr := migrate.RebuildFTS(db)
+	if rebuildErr != nil {
+		log.Fatalf("rebuild: %v", rebuildErr)
 	}
 	fmt.Println("FTS5 index rebuilt successfully.")
 	printStats(s)

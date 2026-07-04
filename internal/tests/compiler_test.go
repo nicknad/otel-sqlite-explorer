@@ -39,7 +39,7 @@ func TestCompilerDeterminism(t *testing.T) {
 
 	// Expected: normalized adds default ORDER BY timestamp_ns DESC.
 	// Logical expressions are wrapped in parentheses by the compiler.
-	expectedSQL := "SELECT id, timestamp_ns, severity_text, service_name, hex(trace_id), hex(span_id), body " +
+	expectedSQL := "SELECT id, timestamp_ns, severity_text, service_name, lower(hex(trace_id)), lower(hex(span_id)), body " +
 		"FROM logs WHERE (service_name = ? AND body LIKE ?) " +
 		"ORDER BY timestamp_ns DESC LIMIT ? OFFSET ?"
 	expectedArgs := []any{"api", "%timeout%", 100, 0}
@@ -70,7 +70,7 @@ func TestCompilerDeterministicIdentity(t *testing.T) {
 	}
 
 	for _, q := range []*dsl.Query{&q1, &q2} {
-		dsl.Validate(q)
+		_ = dsl.Validate(q)
 		dsl.Normalize(q)
 	}
 
@@ -88,8 +88,8 @@ func TestCompilerDeterministicIdentity(t *testing.T) {
 func TestCompilerNoInlineValues(t *testing.T) {
 	input := `{"where": {"eq": ["body", "test"]}, "limit": 10}`
 	var q dsl.Query
-	json.Unmarshal([]byte(input), &q)
-	dsl.Validate(&q)
+	_ = json.Unmarshal([]byte(input), &q)
+	_ = dsl.Validate(&q)
 	dsl.Normalize(&q)
 
 	cq, err := compiler.Compile(&q)
@@ -179,10 +179,10 @@ func TestCompilerHybridMatchAndStructured(t *testing.T) {
 func TestCompilerMatchDeterministic(t *testing.T) {
 	input := `{"where": {"match": "error timeout"}, "limit": 10}`
 	var q1, q2 dsl.Query
-	json.Unmarshal([]byte(input), &q1)
-	json.Unmarshal([]byte(input), &q2)
-	dsl.Validate(&q1)
-	dsl.Validate(&q2)
+	_ = json.Unmarshal([]byte(input), &q1)
+	_ = json.Unmarshal([]byte(input), &q2)
+	_ = dsl.Validate(&q1)
+	_ = dsl.Validate(&q2)
 	dsl.Normalize(&q1)
 	dsl.Normalize(&q2)
 	c1, _ := compiler.Compile(&q1)

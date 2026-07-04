@@ -2,17 +2,32 @@ package tests
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
 	"log-explorer/internal/compiler"
 	"log-explorer/internal/db"
 	"log-explorer/internal/dsl"
 	"log-explorer/internal/migrate"
+
+	_ "modernc.org/sqlite"
+)
+
+// trace1 / trace2 are 16-byte trace IDs whose hex representation is the
+// value shown in the UI so that trace_id filters work end-to-end.
+var (
+	trace1, _ = hex.DecodeString("00112233445566778899aabbccddeeff")
+	trace2, _ = hex.DecodeString("ffeeddccbbaa99887766554433221100")
+	trace3, _ = hex.DecodeString("a1b2c3d4e5f60718293a4b5c6d7e8f90")
+
+	span1, _ = hex.DecodeString("0a1b2c3d4e5f6071")
+	span2, _ = hex.DecodeString("0a1b2c3d4e5f6072")
+	span3, _ = hex.DecodeString("0a1b2c3d4e5f6073")
+	span4, _ = hex.DecodeString("0a1b2c3d4e5f6074")
+	span5, _ = hex.DecodeString("0a1b2c3d4e5f6075")
 )
 
 func setupTestDB(t *testing.T) string {
@@ -23,65 +38,128 @@ func setupTestDB(t *testing.T) string {
 		t.Fatalf("create temp db: %v", err)
 	}
 	path := f.Name()
-	f.Close()
+	_ = f.Close()
 
-	// Open with write access to create schema and seed data.
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		t.Fatalf("open write db: %v", err)
 	}
 
-	schema := `CREATE TABLE logs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		timestamp_ns INTEGER,
-		severity_text TEXT,
-		service_name TEXT,
-		trace_id BLOB,
-		span_id BLOB,
-		body TEXT
-	);`
+	// Match the production schema exactly: log_resource + log_event + log_attr
+	// + logs VIEW (which joins log_event and log_resource).
+	schema := `
+		CREATE TABLE log_resource (
+			id TEXT PRIMARY KEY,
+			service_name TEXT NOT NULL,
+			host_name TEXT,
+			schema_url TEXT,
+			attributes_json TEXT
+		);
+
+		CREATE TABLE log_event (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			resource_id TEXT NOT NULL,
+			timestamp_ns INTEGER NOT NULL,
+			observed_timestamp_ns INTEGER NOT NULL,
+			severity_number INTEGER NOT NULL,
+			severity_text TEXT,
+			trace_id BLOB,
+			span_id BLOB,
+			body TEXT,
+			event_name TEXT,
+			flags INTEGER NOT NULL DEFAULT 0,
+			dropped_attributes_count INTEGER NOT NULL DEFAULT 0,
+			scope_name TEXT,
+			scope_version TEXT,
+			FOREIGN KEY (resource_id) REFERENCES log_resource(id)
+		);
+
+		CREATE TABLE log_attr (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id INTEGER NOT NULL,
+			key TEXT NOT NULL,
+			value_type TEXT NOT NULL,
+			string_value TEXT,
+			int_value INTEGER,
+			double_value REAL,
+			bool_value INTEGER,
+			bytes_value BLOB,
+			FOREIGN KEY (event_id) REFERENCES log_event(id) ON DELETE CASCADE
+		);
+
+		CREATE VIEW logs AS
+		SELECT
+			le.id                AS id,
+			le.timestamp_ns     AS timestamp_ns,
+			le.severity_text     AS severity_text,
+			le.severity_number   AS severity_number,
+			le.trace_id          AS trace_id,
+			le.span_id           AS span_id,
+			le.body              AS body,
+			lr.service_name      AS service_name
+		FROM log_event le
+		JOIN log_resource lr ON le.resource_id = lr.id;`
 
 	if _, err := conn.Exec(schema); err != nil {
-		conn.Close()
-		os.Remove(path)
-		t.Fatalf("create table: %v", err)
+		_ = conn.Close()
+		_ = os.Remove(path)
+		t.Fatalf("create schema: %v", err)
 	}
 
-	// Insert sample rows.
-	rows := []struct {
-		ts          int64
-		severity    string
-		serviceName string
-		traceID     string
-		spanID      string
-		body        string
+	// Insert resources.
+	resources := []struct {
+		id, serviceName string
 	}{
-		{ts: 1_700_000_000_000_000_000, severity: "ERROR", serviceName: "api-gateway",
-			traceID: "abc123", spanID: "span1", body: "connection timeout to upstream"},
-		{ts: 1_700_000_000_000_000_001, severity: "INFO", serviceName: "api-gateway",
-			traceID: "abc123", spanID: "span2", body: "request completed"},
-		{ts: 1_700_000_000_000_000_002, severity: "WARN", serviceName: "auth-svc",
-			traceID: "def456", spanID: "span3", body: "rate limit approaching"},
-		{ts: 1_700_000_000_000_000_003, severity: "ERROR", serviceName: "auth-svc",
-			traceID: "def456", spanID: "span4", body: "token validation failed"},
-		{ts: 1_700_000_000_000_000_004, severity: "DEBUG", serviceName: "api-gateway",
-			traceID: "ghi789", spanID: "span5", body: "debug: parsed headers"},
+		{"res-api", "api-gateway"},
+		{"res-auth", "auth-svc"},
+	}
+	for _, r := range resources {
+		if _, err := conn.Exec(
+			"INSERT INTO log_resource (id, service_name) VALUES (?, ?)",
+			r.id, r.serviceName,
+		); err != nil {
+			_ = conn.Close()
+			_ = os.Remove(path)
+			t.Fatalf("insert resource: %v", err)
+		}
+	}
+
+	// Insert sample log events.
+	type logRow struct {
+		ts       int64
+		resource string
+		severity string
+		sevNum   int64
+		traceID  []byte
+		spanID   []byte
+		body     string
+	}
+	rows := []logRow{
+		{1_700_000_000_000_000_000, "res-api", "ERROR", 17, trace1, span1, "connection timeout to upstream"},
+		{1_700_000_000_000_000_001, "res-api", "INFO", 9, trace1, span2, "request completed"},
+		{1_700_000_000_000_000_002, "res-auth", "WARN", 13, trace2, span3, "rate limit approaching"},
+		{1_700_000_000_000_000_003, "res-auth", "ERROR", 17, trace2, span4, "token validation failed"},
+		{1_700_000_000_000_000_004, "res-api", "DEBUG", 5, trace3, span5, "debug: parsed headers"},
 	}
 
 	for _, r := range rows {
 		_, err := conn.Exec(
-			"INSERT INTO logs (timestamp_ns, severity_text, service_name, trace_id, span_id, body) VALUES (?, ?, ?, ?, ?, ?)",
-			r.ts, r.severity, r.serviceName, []byte(r.traceID), []byte(r.spanID), r.body,
+			`INSERT INTO log_event
+				(timestamp_ns, observed_timestamp_ns, resource_id,
+				 severity_number, severity_text, trace_id, span_id, body)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ts, r.ts, r.resource,
+			r.sevNum, r.severity, r.traceID, r.spanID, r.body,
 		)
 		if err != nil {
-			conn.Close()
-			os.Remove(path)
-			t.Fatalf("insert: %v", err)
+			_ = conn.Close()
+			_ = os.Remove(path)
+			t.Fatalf("insert log event: %v", err)
 		}
 	}
 
-	conn.Close()
+	_ = conn.Close()
 	return path
 }
 
@@ -97,7 +175,7 @@ func setupTestDBWithFTS(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("open for fts: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if _, err := migrate.RebuildFTS(conn); err != nil {
 		t.Fatalf("rebuild fts: %v", err)
@@ -107,14 +185,14 @@ func setupTestDBWithFTS(t *testing.T) string {
 
 func TestIntegrationQueryFullStack(t *testing.T) {
 	path := setupTestDB(t)
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	// Open read-only via the db package.
 	client, err := db.Open(path)
 	if err != nil {
 		t.Fatalf("db open: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Build a DSL query: service_name contains "gateway" AND severity = "ERROR".
 	input := `{
@@ -129,10 +207,12 @@ func TestIntegrationQueryFullStack(t *testing.T) {
 	}`
 
 	var q dsl.Query
-	if err := json.Unmarshal([]byte(input), &q); err != nil {
+	err = json.Unmarshal([]byte(input), &q)
+	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if err := dsl.Validate(&q); err != nil {
+	err = dsl.Validate(&q)
+	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	dsl.Normalize(&q)
@@ -166,20 +246,20 @@ func TestIntegrationQueryFullStack(t *testing.T) {
 
 func TestIntegrationEmptyWhere(t *testing.T) {
 	path := setupTestDB(t)
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	client, err := db.Open(path)
 	if err != nil {
 		t.Fatalf("db open: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// No WHERE clause — should return all rows (limited to 100).
 	q := dsl.Query{Select: "*", Limit: 100, Offset: 0}
 	q.Sort = []dsl.Sort{{Field: "timestamp", Desc: false}}
-	dsl.Validate(&q)
+	_ = dsl.Validate(&q)
 	dsl.Normalize(&q)
-	dsl.Validate(&q) // validate again after normalize
+	_ = dsl.Validate(&q) // validate again after normalize
 
 	cq, err := compiler.Compile(&q)
 	if err != nil {
@@ -198,13 +278,13 @@ func TestIntegrationEmptyWhere(t *testing.T) {
 
 func TestIntegrationFTSMatch(t *testing.T) {
 	path := setupTestDBWithFTS(t)
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	client, err := db.Open(path)
 	if err != nil {
 		t.Fatalf("db open: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if !client.HasFTS() {
 		t.Fatal("expected HasFTS=true")
 	}
@@ -213,10 +293,12 @@ func TestIntegrationFTSMatch(t *testing.T) {
 	// Querying "timeout" (a single token) must match that row.
 	input := `{"where": {"match": "timeout"}, "limit": 10}`
 	var q dsl.Query
-	if err := json.Unmarshal([]byte(input), &q); err != nil {
+	err = json.Unmarshal([]byte(input), &q)
+	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if err := dsl.Validate(&q); err != nil {
+	err = dsl.Validate(&q)
+	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	dsl.Normalize(&q)
@@ -240,13 +322,13 @@ func TestIntegrationFTSMatch(t *testing.T) {
 
 func TestIntegrationFTSHybridMatchStructured(t *testing.T) {
 	path := setupTestDBWithFTS(t)
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	client, err := db.Open(path)
 	if err != nil {
 		t.Fatalf("db open: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Full-text "timeout" AND service_name == "auth-svc" should match nothing
 	// (the timeout row belongs to api-gateway), while "failed" AND auth-svc
@@ -261,10 +343,12 @@ func TestIntegrationFTSHybridMatchStructured(t *testing.T) {
 		"limit": 10
 	}`
 	var q dsl.Query
-	if err := json.Unmarshal([]byte(input), &q); err != nil {
+	err = json.Unmarshal([]byte(input), &q)
+	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if err := dsl.Validate(&q); err != nil {
+	err = dsl.Validate(&q)
+	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	dsl.Normalize(&q)
@@ -289,13 +373,13 @@ func TestIntegrationFTSHybridMatchStructured(t *testing.T) {
 func TestIntegrationFTSFallbackWithoutIndex(t *testing.T) {
 	// A plain DB (no logs_fts) must fall back match -> body contains.
 	path := setupTestDB(t)
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	client, err := db.Open(path)
 	if err != nil {
 		t.Fatalf("db open: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if client.HasFTS() {
 		t.Fatal("expected HasFTS=false for plain db")
 	}
@@ -304,7 +388,8 @@ func TestIntegrationFTSFallbackWithoutIndex(t *testing.T) {
 		Where: dsl.MatchExpr{Query: "timeout"},
 		Limit: 10,
 	}
-	if err := dsl.Validate(&q); err != nil {
+	err = dsl.Validate(&q)
+	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	q.Where = dsl.RewriteMatchToContains(q.Where)

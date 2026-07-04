@@ -5,10 +5,11 @@
 package migrate
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // SQLite driver registration
 )
 
 // SchemaSQL creates the FTS5 full-text index over the log content.
@@ -58,20 +59,20 @@ type FTSStats struct {
 // The connection must be writable (this package is invoked by the maintenance
 // tool, never by the read-only sidecar).
 func RebuildFTS(db *sql.DB) (FTSStats, error) {
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return FTSStats{}, fmt.Errorf("begin rebuild tx: %w", err)
 	}
-	if _, err := tx.Exec(DropSQL); err != nil {
-		tx.Rollback()
+	if _, err := tx.ExecContext(context.Background(), DropSQL); err != nil {
+		_ = tx.Rollback()
 		return FTSStats{}, fmt.Errorf("drop fts: %w", err)
 	}
-	if _, err := tx.Exec(SchemaSQL); err != nil {
-		tx.Rollback()
+	if _, err := tx.ExecContext(context.Background(), SchemaSQL); err != nil {
+		_ = tx.Rollback()
 		return FTSStats{}, fmt.Errorf("create fts: %w", err)
 	}
-	if _, err := tx.Exec(RebuildSQL); err != nil {
-		tx.Rollback()
+	if _, err := tx.ExecContext(context.Background(), RebuildSQL); err != nil {
+		_ = tx.Rollback()
 		return FTSStats{}, fmt.Errorf("populate fts: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -84,7 +85,8 @@ func RebuildFTS(db *sql.DB) (FTSStats, error) {
 func Stats(db *sql.DB) (FTSStats, error) {
 	var s FTSStats
 	var name string
-	err := db.QueryRow(
+	err := db.QueryRowContext(
+		context.Background(),
 		"SELECT name FROM sqlite_master WHERE type='table' AND name='logs_fts' LIMIT 1",
 	).Scan(&name)
 	if err != nil && err != sql.ErrNoRows {
@@ -92,11 +94,11 @@ func Stats(db *sql.DB) (FTSStats, error) {
 	}
 	s.HasFTS = name == "logs_fts"
 
-	if err := db.QueryRow("SELECT COUNT(*) FROM logs").Scan(&s.LogsCount); err != nil {
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM logs").Scan(&s.LogsCount); err != nil {
 		return s, fmt.Errorf("count logs: %w", err)
 	}
 	if s.HasFTS {
-		if err := db.QueryRow("SELECT COUNT(*) FROM logs_fts").Scan(&s.FTSCount); err != nil {
+		if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM logs_fts").Scan(&s.FTSCount); err != nil {
 			return s, fmt.Errorf("count logs_fts: %w", err)
 		}
 	}
@@ -109,7 +111,8 @@ func Stats(db *sql.DB) (FTSStats, error) {
 // is rerun. The query uses FTS5 syntax (e.g. "timeout", "error AND gateway").
 func ProbeToken(db *sql.DB, ftsQuery string) (int64, error) {
 	var n int64
-	err := db.QueryRow(
+	err := db.QueryRowContext(
+		context.Background(),
 		"SELECT COUNT(*) FROM (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)",
 		ftsQuery,
 	).Scan(&n)

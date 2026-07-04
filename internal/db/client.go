@@ -3,11 +3,12 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sync"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // SQLite driver registration
 )
 
 // Client holds the read-only SQLite connection.
@@ -35,15 +36,15 @@ func Open(path string) (*Client, error) {
 		"PRAGMA busy_timeout = 5000",
 	}
 	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			db.Close()
+		if _, err := db.ExecContext(context.Background(), p); err != nil {
+			_ = db.Close()
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
 	}
 
 	// Test the connection
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := db.PingContext(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("db ping: %w", err)
 	}
 
@@ -54,7 +55,7 @@ func Open(path string) (*Client, error) {
 	// When absent, MatchExpr nodes are rewritten to body substring matches
 	// by the API layer so the app keeps working on plain databases.
 	var name string
-	_ = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='logs_fts' LIMIT 1").Scan(&name)
+	_ = db.QueryRowContext(context.Background(), "SELECT name FROM sqlite_master WHERE type='table' AND name='logs_fts' LIMIT 1").Scan(&name)
 
 	return &Client{db: db, hasFTS: name == "logs_fts"}, nil
 }

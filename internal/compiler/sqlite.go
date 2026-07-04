@@ -4,6 +4,7 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -45,7 +46,7 @@ func colExpr(field string, qualify bool) (string, error) {
 	}
 	switch field {
 	case "trace_id", "span_id":
-		col = "hex(" + col + ")"
+		col = "lower(hex(" + col + "))"
 	}
 	return col, nil
 }
@@ -90,7 +91,7 @@ func selectCols(qualify bool) string {
 		}
 		switch c {
 		case "trace_id", "span_id":
-			expr = "hex(" + expr + ")"
+			expr = "lower(hex(" + expr + "))"
 		}
 		parts[i] = expr
 	}
@@ -203,33 +204,33 @@ func (c *exprCompiler) compileBinary(e *dsl.BinaryExpr) (sql string, args []any,
 
 	switch e.Op {
 	case dsl.OpEq:
-		return fmt.Sprintf("%s = ?", col), []any{valueToAny(&e.Value)}, nil
+		return col + " = ?", []any{valueToAny(&e.Value)}, nil
 	case dsl.OpNe:
-		return fmt.Sprintf("%s != ?", col), []any{valueToAny(&e.Value)}, nil
+		return col + " != ?", []any{valueToAny(&e.Value)}, nil
 	case dsl.OpGt:
-		return fmt.Sprintf("%s > ?", col), []any{valueToAny(&e.Value)}, nil
+		return col + " > ?", []any{valueToAny(&e.Value)}, nil
 	case dsl.OpGte:
-		return fmt.Sprintf("%s >= ?", col), []any{valueToAny(&e.Value)}, nil
+		return col + " >= ?", []any{valueToAny(&e.Value)}, nil
 	case dsl.OpLt:
-		return fmt.Sprintf("%s < ?", col), []any{valueToAny(&e.Value)}, nil
+		return col + " < ?", []any{valueToAny(&e.Value)}, nil
 	case dsl.OpLte:
-		return fmt.Sprintf("%s <= ?", col), []any{valueToAny(&e.Value)}, nil
+		return col + " <= ?", []any{valueToAny(&e.Value)}, nil
 	case dsl.OpContains:
 		val := valueToAny(&e.Value)
 		str, ok := val.(string)
 		if !ok {
-			return "", nil, fmt.Errorf("contains requires a string value")
+			return "", nil, errors.New("contains requires a string value")
 		}
-		return fmt.Sprintf("%s LIKE ?", col), []any{"%" + str + "%"}, nil
+		return col + " LIKE ?", []any{"%" + str + "%"}, nil
 	case dsl.OpBetween:
 		if e.Value.Min == nil || e.Value.Max == nil {
-			return "", nil, fmt.Errorf("between requires min and max")
+			return "", nil, errors.New("between requires min and max")
 		}
-		return fmt.Sprintf("%s BETWEEN ? AND ?", col),
+		return col + " BETWEEN ? AND ?",
 			[]any{valueToAny(e.Value.Min), valueToAny(e.Value.Max)}, nil
 	case dsl.OpIn:
 		if len(e.Value.List) == 0 {
-			return "", nil, fmt.Errorf("in requires at least one value")
+			return "", nil, errors.New("in requires at least one value")
 		}
 		placeholders := make([]string, len(e.Value.List))
 		args := make([]any, len(e.Value.List))

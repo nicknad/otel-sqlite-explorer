@@ -5,10 +5,10 @@ import (
 	"os"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
 	"log-explorer/internal/db"
 	"log-explorer/internal/migrate"
+
+	_ "modernc.org/sqlite"
 )
 
 // setupPlainDB creates a writable temp DB with a logs table and a few rows,
@@ -20,40 +20,83 @@ func setupPlainDB(t *testing.T) (string, *sql.DB) {
 		t.Fatalf("temp: %v", err)
 	}
 	path := f.Name()
-	f.Close()
+	_ = f.Close()
 
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		t.Fatalf("open: %v", err)
 	}
-	if _, err := conn.Exec(`CREATE TABLE logs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		timestamp_ns INTEGER,
-		severity_text TEXT,
-		service_name TEXT,
-		trace_id BLOB,
-		span_id BLOB,
-		body TEXT
-	)`); err != nil {
-		conn.Close()
-		os.Remove(path)
-		t.Fatalf("create logs: %v", err)
+	if _, err := conn.Exec(`
+		CREATE TABLE log_resource (
+			id TEXT PRIMARY KEY,
+			service_name TEXT NOT NULL
+		);
+
+		CREATE TABLE log_event (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			resource_id TEXT NOT NULL,
+			timestamp_ns INTEGER NOT NULL,
+			observed_timestamp_ns INTEGER NOT NULL,
+			severity_number INTEGER NOT NULL,
+			severity_text TEXT,
+			trace_id BLOB,
+			span_id BLOB,
+			body TEXT,
+			flags INTEGER NOT NULL DEFAULT 0,
+			dropped_attributes_count INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY (resource_id) REFERENCES log_resource(id)
+		);
+
+		CREATE VIEW logs AS
+		SELECT
+			le.id                AS id,
+			le.timestamp_ns     AS timestamp_ns,
+			le.severity_text     AS severity_text,
+			le.severity_number   AS severity_number,
+			le.trace_id          AS trace_id,
+			le.span_id           AS span_id,
+			le.body              AS body,
+			lr.service_name      AS service_name
+		FROM log_event le
+		JOIN log_resource lr ON le.resource_id = lr.id;
+	`); err != nil {
+		_ = conn.Close()
+		_ = os.Remove(path)
+		t.Fatalf("create schema: %v", err)
 	}
-	rows := []struct {
-		ts, sev, svc, body string
-	}{
-		{"1", "ERROR", "api-gateway", "connection timeout to upstream"},
-		{"2", "INFO", "api-gateway", "request completed"},
-		{"3", "WARN", "auth-svc", "rate limit approaching"},
-	}
-	for _, r := range rows {
+
+	// Insert resources.
+	for _, r := range []struct{ id, svc string }{
+		{"res-api", "api-gateway"},
+		{"res-auth", "auth-svc"},
+	} {
 		if _, err := conn.Exec(
-			"INSERT INTO logs (timestamp_ns, severity_text, service_name, body) VALUES (?,?,?,?)",
-			r.ts, r.sev, r.svc, r.body,
+			"INSERT INTO log_resource (id, service_name) VALUES (?, ?)",
+			r.id, r.svc,
 		); err != nil {
-			conn.Close()
-			os.Remove(path)
+			_ = conn.Close()
+			_ = os.Remove(path)
+			t.Fatalf("insert resource: %v", err)
+		}
+	}
+
+	type row struct {
+		ts, sevNum, sev, svc, body, resID string
+	}
+	for _, r := range []row{
+		{"1", "17", "ERROR", "api-gateway", "connection timeout to upstream", "res-api"},
+		{"2", "9", "INFO", "api-gateway", "request completed", "res-api"},
+		{"3", "13", "WARN", "auth-svc", "rate limit approaching", "res-auth"},
+	} {
+		if _, err := conn.Exec(
+			`INSERT INTO log_event
+				(timestamp_ns, observed_timestamp_ns, severity_number, severity_text, body, resource_id)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+			r.ts, r.ts, r.sevNum, r.sev, r.body, r.resID,
+		); err != nil {
+			_ = conn.Close()
+			_ = os.Remove(path)
 			t.Fatalf("insert: %v", err)
 		}
 	}
@@ -62,8 +105,8 @@ func setupPlainDB(t *testing.T) (string, *sql.DB) {
 
 func TestMigrateRebuildCreatesIndex(t *testing.T) {
 	path, conn := setupPlainDB(t)
-	defer conn.Close()
-	defer os.Remove(path)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = os.Remove(path) }()
 
 	// Before: no FTS table.
 	s, err := migrate.Stats(conn)
@@ -89,8 +132,8 @@ func TestMigrateRebuildCreatesIndex(t *testing.T) {
 
 func TestMigrateRebuildIsIdempotent(t *testing.T) {
 	path, conn := setupPlainDB(t)
-	defer conn.Close()
-	defer os.Remove(path)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = os.Remove(path) }()
 
 	if _, err := migrate.RebuildFTS(conn); err != nil {
 		t.Fatalf("first rebuild: %v", err)
@@ -107,17 +150,19 @@ func TestMigrateRebuildIsIdempotent(t *testing.T) {
 
 func TestMigrateRebuildDetectsDriftAfterInsert(t *testing.T) {
 	path, conn := setupPlainDB(t)
-	defer conn.Close()
-	defer os.Remove(path)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = os.Remove(path) }()
 
 	if _, err := migrate.RebuildFTS(conn); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
 	// Insert a new log with a distinctive token WITHOUT touching the FTS
-	// index (no triggers exist). Its token must NOT be findable via MATCH.
+	// index (no triggers exist). Insert into log_event, not the logs VIEW.
 	if _, err := conn.Exec(
-		"INSERT INTO logs (timestamp_ns, severity_text, service_name, body) VALUES (?,?,?,?)",
-		"4", "ERROR", "api-gateway", "new zzz_drift_token error",
+		`INSERT INTO log_event
+			(timestamp_ns, observed_timestamp_ns, severity_number, severity_text, body, resource_id)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+		"4", "4", "17", "ERROR", "new zzz_drift_token error", "res-api",
 	); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -130,8 +175,8 @@ func TestMigrateRebuildDetectsDriftAfterInsert(t *testing.T) {
 	}
 
 	// Rebuild resyncs and the token becomes findable.
-	if _, err := migrate.RebuildFTS(conn); err != nil {
-		t.Fatalf("rebuild resync: %v", err)
+	if _, rebuildErr := migrate.RebuildFTS(conn); rebuildErr != nil {
+		t.Fatalf("rebuild resync: %v", rebuildErr)
 	}
 	n, err = migrate.ProbeToken(conn, "zzz_drift_token")
 	if err != nil {
@@ -144,13 +189,13 @@ func TestMigrateRebuildDetectsDriftAfterInsert(t *testing.T) {
 
 func TestMigrateRebuildMakesMatchQueriesWork(t *testing.T) {
 	path, conn := setupPlainDB(t)
-	defer conn.Close()
-	defer os.Remove(path)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = os.Remove(path) }()
 
 	if _, err := migrate.RebuildFTS(conn); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 
 	// Open read-only via the production db package and confirm a token
 	// search finds the right row.
@@ -158,7 +203,7 @@ func TestMigrateRebuildMakesMatchQueriesWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen ro: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if !client.HasFTS() {
 		t.Fatal("read-only client should detect fts table")
 	}

@@ -4,6 +4,7 @@ package dsl
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -266,7 +267,7 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 		return nil, err
 	}
 	if len(raw) != 1 {
-		return nil, fmt.Errorf("shorthand requires exactly one key")
+		return nil, errors.New("shorthand requires exactly one key")
 	}
 
 	// Capture the single key for error reporting.
@@ -294,7 +295,7 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 	if opKey == string(OpMatch) {
 		var s string
 		if err := json.Unmarshal(opVal, &s); err != nil {
-			return nil, fmt.Errorf("match requires a string value")
+			return nil, errors.New("match requires a string value")
 		}
 		return MatchExpr{Query: s}, nil
 	}
@@ -321,12 +322,12 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 		}
 		field, ok := arr[0].(string)
 		if !ok {
-			return nil, fmt.Errorf("between: first element must be a field name")
+			return nil, errors.New("between: first element must be a field name")
 		}
 		minVal, minErr := jsonToValue(arr[1])
 		maxVal, maxErr := jsonToValue(arr[2])
 		if minErr != nil || maxErr != nil {
-			return nil, fmt.Errorf("between: invalid min/max values")
+			return nil, errors.New("between: invalid min/max values")
 		}
 		return BinaryExpr{
 			Op:    OpBetween,
@@ -344,11 +345,11 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 		}
 		field, ok := arr[0].(string)
 		if !ok {
-			return nil, fmt.Errorf("in: first element must be a field name")
+			return nil, errors.New("in: first element must be a field name")
 		}
 		list, ok := arr[1].([]any)
 		if !ok {
-			return nil, fmt.Errorf("in: second element must be an array")
+			return nil, errors.New("in: second element must be an array")
 		}
 		vals := make([]Value, len(list))
 		for i, item := range list {
@@ -450,12 +451,12 @@ func exprFromVerbose(j *exprJSON) (Expr, error) {
 	switch j.Type {
 	case "binary":
 		if j.Value == nil {
-			return nil, fmt.Errorf("binary expression missing value")
+			return nil, errors.New("binary expression missing value")
 		}
 		return BinaryExpr{Op: j.Op, Field: j.Field, Value: *j.Value}, nil
 	case "logical":
 		if len(j.Exprs) != 2 {
-			return nil, fmt.Errorf("logical expression requires exactly 2 sub-expressions")
+			return nil, errors.New("logical expression requires exactly 2 sub-expressions")
 		}
 		left, err := exprFromVerbose(&j.Exprs[0])
 		if err != nil {

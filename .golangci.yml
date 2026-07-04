@@ -1,72 +1,126 @@
+# golangci-lint v2 configuration
+# Docs: https://golangci-lint.run/
 version: "2"
-output:
-  formats:
-    text:
-      path: stdout
-      print-linter-name: true
-      print-issued-lines: true
-linters:
-  enable:
-    - gocritic
-    - gosec
-    - lll
-    - misspell
-    - nakedret
-    - staticcheck
-    - unconvert
-    - whitespace
-  settings:
-    gocritic:
-      disabled-checks:
-        - commentFormatting
-        - whyNoLint
-      enabled-tags:
-        - diagnostic
-        - style
-        - performance
-    lll:
-      line-length: 120
-    misspell:
-      locale: US
-  exclusions:
-    generated: lax
-    presets:
-      - comments
-      - common-false-positives
-      - legacy
-      - std-error-handling
-    rules:
-      - linters:
-          - errcheck
-          - gosec
-        path: _test\.go
-      - linters:
-          - all
-        path: internal/generated/
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-severity:
-  default: error
-  rules:
-    - linters:
-        - staticcheck
-      severity: warning
+
+run:
+  timeout: 3m
+
 formatters:
   enable:
-    - gofmt
     - goimports
   settings:
     goimports:
       local-prefixes:
-        - github.com/nnadolski/otel-sqlite
+        - log-explorer
+
+linters:
+  enable:
+    # ── Standard correctness ──
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+
+    # ── Security ──
+    - gosec
+
+    # ── Style & correctness ──
+    - revive
+    - misspell
+    - unconvert
+    - usestdlibvars
+    - dupword
+    - intrange
+    - mirror
+    - perfsprint
+
+    # ── Performance & memory ──
+    - prealloc
+    - noctx
+    - bodyclose
+
+    # ── Code quality ──
+    - gocritic
+    - testifylint
+    - modernize
+    - nakedret
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+          severity: warning
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+          severity: warning
+        - name: increment-decrement
+        - name: var-naming
+          severity: warning
+          arguments:
+            - ["ID", "TTL", "URL", "HTTP", "JSON", "API", "AEAD", "KDF", "AppID", "SecretID", "AppRole"]
+            - []
+        - name: var-declaration
+        - name: range
+          severity: warning
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+          severity: warning
+        - name: indent-error-flow
+          severity: warning
+        - name: errorf
+        - name: empty-block
+          severity: warning
+        - name: superfluous-else
+          severity: warning
+        - name: unused-parameter
+          severity: warning
+        - name: unreachable-code
+        - name: redefines-builtin-id
+
+    gocritic:
+      enable-all: true
+      disabled-checks:
+        - whyNoLint
+        - unnamedResult
+        - ifElseChain
+        - appendAssign
+
+    gosec:
+      excludes:
+        - G104
+        - G307
+
+    staticcheck:
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -SA1019
+
   exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - noctx
+          - bodyclose
+          - unparam
+          - gocritic
+      - path: cmd/
+        linters:
+          - gocritic
+          - revive
     generated: lax
-    paths:
-      - third_party$
-      - builtin$
-      - examples$

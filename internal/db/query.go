@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -33,7 +34,7 @@ type Attr struct {
 }
 
 // Display renders the attribute's value as a string based on its value_type.
-func (a Attr) Display() string {
+func (a *Attr) Display() string {
 	switch a.ValueType {
 	case "string":
 		if a.StringValue.Valid {
@@ -67,11 +68,11 @@ func (c *Client) GetAttrs(cq *compiler.CompiledQuery) ([]Attr, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	rows, err := c.db.Query(cq.SQL, cq.Args...)
+	rows, err := c.db.QueryContext(context.Background(), cq.SQL, cq.Args...)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w\nSQL: %s\nArgs: %v", err, cq.SQL, cq.Args)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []Attr
 	for rows.Next() {
@@ -92,11 +93,11 @@ func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	rows, err := c.db.Query(cq.SQL, cq.Args...)
+	rows, err := c.db.QueryContext(context.Background(), cq.SQL, cq.Args...)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w\nSQL: %s\nArgs: %v", err, cq.SQL, cq.Args)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []LogRow
 	for rows.Next() {

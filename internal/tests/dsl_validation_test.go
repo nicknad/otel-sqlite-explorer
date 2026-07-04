@@ -72,7 +72,7 @@ func TestDeeplyNestedExpressionIsRejected(t *testing.T) {
 	}
 	// Nest it 10 levels deep → depth = 11 (> MaxExprDepth=10)
 	current := dsl.Expr(leaf)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		current = dsl.LogicalExpr{
 			Op:    dsl.OpAnd,
 			Left:  current,
