@@ -251,26 +251,6 @@ HTML template / JSON response
 Only `internal/compiler` constructs SQL. Only `internal/db` touches
 `database/sql`. The API layer never sees raw SQL.
 
-### Packages
-
-| Package                     | Responsibility                                   |
-|-----------------------------|--------------------------------------------------|
-| `cmd/server`                | Entry point, flags, graceful shutdown            |
-| `cmd/migrate-fts`           | FTS5 index maintenance tool (rebuild/stats/probe)|
-| `internal/api`              | HTTP handlers, form/JSON → DSL, pagination       |
-| `internal/dsl`              | Query types, JSON unmarshalling, validation      |
-| `internal/compiler`         | DSL → parameterized SQLite SQL                   |
-| `internal/db`               | Read-only SQLite client, row/attr scanning       |
-| `internal/migrate`          | FTS5 index creation + rebuild (write access)     |
-| `internal/ui`               | Embedded HTML templates                          |
-| `internal/tests`            | Validation, compiler, FTS, and integration tests |
-
-## Development
-
-```bash
-go build ./...
-go test ./...
-```
 
 ## License
 
