@@ -39,7 +39,7 @@ func TestCompilerDeterminism(t *testing.T) {
 
 	// Expected: normalized adds default ORDER BY timestamp_ns DESC.
 	// Logical expressions are wrapped in parentheses by the compiler.
-	expectedSQL := "SELECT id, timestamp_ns, severity_text, service_name, lower(hex(trace_id)), lower(hex(span_id)), body " +
+	expectedSQL := "SELECT id, timestamp_ns, severity_text, service_name, lower(hex(trace_id)), lower(hex(span_id)), body, attributes_json " +
 		"FROM logs WHERE (service_name = ? AND body LIKE ?) " +
 		"ORDER BY timestamp_ns DESC LIMIT ? OFFSET ?"
 	expectedArgs := []any{"api", "%timeout%", 100, 0}

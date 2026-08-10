@@ -59,21 +59,8 @@
   <pre>{{.Log.Body}}</pre>
 
   <h2>Attributes</h2>
-  {{if .Attrs}}
-  <table>
-    <thead>
-      <tr><th>Key</th><th>Type</th><th>Value</th></tr>
-    </thead>
-    <tbody>
-      {{range .Attrs}}
-      <tr>
-        <td class="mono">{{.Key}}</td>
-        <td>{{.ValueType}}</td>
-        <td class="mono">{{.Display}}</td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
+  {{if hasAttributes .Log.AttributesJSON}}
+  <pre>{{prettyJSON .Log.AttributesJSON}}</pre>
   {{else}}
   <p style="color:#8b949e">No attributes.</p>
   {{end}}

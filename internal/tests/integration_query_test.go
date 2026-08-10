@@ -46,8 +46,8 @@ func setupTestDB(t *testing.T) string {
 		t.Fatalf("open write db: %v", err)
 	}
 
-	// Match the production schema exactly: log_resource + log_event + log_attr
-	// + logs VIEW (which joins log_event and log_resource).
+	// Match the production schema exactly: log_resource + log_event with
+	// inline event attributes + logs VIEW (which joins event and resource).
 	schema := `
 		CREATE TABLE log_resource (
 			id TEXT PRIMARY KEY,
@@ -72,20 +72,8 @@ func setupTestDB(t *testing.T) string {
 			dropped_attributes_count INTEGER NOT NULL DEFAULT 0,
 			scope_name TEXT,
 			scope_version TEXT,
+			attributes_json TEXT NOT NULL DEFAULT '{}',
 			FOREIGN KEY (resource_id) REFERENCES log_resource(id)
-		);
-
-		CREATE TABLE log_attr (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			event_id INTEGER NOT NULL,
-			key TEXT NOT NULL,
-			value_type TEXT NOT NULL,
-			string_value TEXT,
-			int_value INTEGER,
-			double_value REAL,
-			bool_value INTEGER,
-			bytes_value BLOB,
-			FOREIGN KEY (event_id) REFERENCES log_event(id) ON DELETE CASCADE
 		);
 
 		CREATE VIEW logs AS
@@ -97,6 +85,7 @@ func setupTestDB(t *testing.T) string {
 			le.trace_id          AS trace_id,
 			le.span_id           AS span_id,
 			le.body              AS body,
+			le.attributes_json   AS attributes_json,
 			lr.service_name      AS service_name
 		FROM log_event le
 		JOIN log_resource lr ON le.resource_id = lr.id;`
@@ -157,6 +146,14 @@ func setupTestDB(t *testing.T) string {
 			_ = os.Remove(path)
 			t.Fatalf("insert log event: %v", err)
 		}
+	}
+	if _, err := conn.Exec(
+		`UPDATE log_event SET attributes_json = ? WHERE id = 1`,
+		`{"component":"gateway","attempt":2}`,
+	); err != nil {
+		_ = conn.Close()
+		_ = os.Remove(path)
+		t.Fatalf("insert event attributes: %v", err)
 	}
 
 	_ = conn.Close()

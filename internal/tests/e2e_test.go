@@ -294,6 +294,9 @@ func TestE2E_DetailPageValidID(t *testing.T) {
 	if !strings.Contains(body, "api-gateway") {
 		t.Error("detail page missing service name")
 	}
+	if !strings.Contains(body, "component") || !strings.Contains(body, "gateway") {
+		t.Error("detail page missing inline event attributes")
+	}
 }
 
 func TestE2E_DetailPageInvalidID(t *testing.T) {

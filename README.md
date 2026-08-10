@@ -35,12 +35,14 @@ database that exposes a `logs` view/table with the columns below.
   | Column        | Type    | Description                          |
   |---------------|---------|--------------------------------------|
   | `id`          | INTEGER | Unique log event id (row link)       |
-  | `timestamp`   | INTEGER | Event time, nanoseconds since epoch  |
-  | `severity`    | TEXT    | Severity text (ERROR, WARN, INFO…)   |
+  | `timestamp_ns`| INTEGER | Event time, nanoseconds since epoch  |
+  | `severity_text`| TEXT   | Severity text (ERROR, WARN, INFO…)   |
+  | `severity_number`| INTEGER | Numeric OTel severity              |
   | `service_name`| TEXT    | Emitting service name                |
-  | `trace_id`    | TEXT    | Hex-encoded trace id                 |
-  | `span_id`     | TEXT    | Hex-encoded span id                  |
+  | `trace_id`    | BLOB    | Binary trace id                      |
+  | `span_id`     | BLOB    | Binary span id                       |
   | `body`        | TEXT    | Log body                             |
+  | `attributes_json`| TEXT | Inline event attributes as JSON      |
 
   For the normalized OTel collector schema (`log_event` + `log_resource` with
   BLOB trace/span ids), create a view:
@@ -48,18 +50,22 @@ database that exposes a `logs` view/table with the columns below.
   ```sql
   CREATE VIEW logs AS
   SELECT le.id AS id,
-         le.timestamp_ns AS timestamp,
-         le.severity_text AS severity,
+         le.timestamp_ns AS timestamp_ns,
+         le.severity_text AS severity_text,
+         le.severity_number AS severity_number,
          lr.service_name AS service_name,
-         hex(le.trace_id) AS trace_id,
-         hex(le.span_id) AS span_id,
-         le.body AS body
+         le.trace_id AS trace_id,
+         le.span_id AS span_id,
+         le.body AS body,
+         le.attributes_json AS attributes_json
   FROM log_event le
   JOIN log_resource lr ON le.resource_id = lr.id;
   ```
 
-  The detail page also reads attributes from a `log_attr` table keyed by
-  `event_id`; if absent, the detail page simply shows "No attributes."
+  With the current otel-sqlite schema (migration 005), event attributes are
+  stored inline in `log_event.attributes_json`; the legacy `log_attr` table is
+  no longer used. The detail page renders this JSON, or "No attributes." for
+  an empty object.
 
 ### Build & Run
 

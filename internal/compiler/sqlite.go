@@ -55,7 +55,7 @@ func colExpr(field string, qualify bool) (string, error) {
 // scan order. These are used to build the SELECT list; BLOB columns
 // (trace_id, span_id) are wrapped with hex() by selectCols.
 var logColumns = []string{
-	"id", "timestamp_ns", "severity_text", "service_name", "trace_id", "span_id", "body",
+	"id", "timestamp_ns", "severity_text", "service_name", "trace_id", "span_id", "body", "attributes_json",
 }
 
 // Constant SQL fragments.
@@ -66,14 +66,6 @@ func CompileGetByID(id int64) *CompiledQuery {
 	return &CompiledQuery{
 		SQL:  "SELECT " + selectCols(false) + " " + fromLogs + " WHERE id = ? LIMIT 1",
 		Args: []any{id},
-	}
-}
-
-// CompileGetAttrs builds a parameterized SELECT for the attributes of a log event.
-func CompileGetAttrs(eventID int64) *CompiledQuery {
-	return &CompiledQuery{
-		SQL:  "SELECT key, value_type, string_value, int_value, double_value, bool_value, bytes_value FROM log_attr WHERE event_id = ? ORDER BY id",
-		Args: []any{eventID},
 	}
 }
 

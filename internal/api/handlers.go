@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -36,6 +37,17 @@ func NewServer(database *db.Client) (*Server, error) {
 		"lower": strings.ToLower,
 		"add":   func(a, b int) int { return a + b },
 		"sub":   func(a, b int) int { return a - b },
+		"hasAttributes": func(raw string) bool {
+			var attrs map[string]json.RawMessage
+			return json.Unmarshal([]byte(raw), &attrs) == nil && len(attrs) > 0
+		},
+		"prettyJSON": func(raw string) string {
+			var formatted bytes.Buffer
+			if err := json.Indent(&formatted, []byte(raw), "", "  "); err != nil {
+				return raw
+			}
+			return formatted.String()
+		},
 	}
 
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(ui.Templates, "templates/*.html")
@@ -183,17 +195,8 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	aq := compiler.CompileGetAttrs(id)
-	attrs, err := s.db.GetAttrs(aq)
-	if err != nil {
-		log.Printf("attrs query error: %v", err)
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
-	}
-
 	data := map[string]any{
-		"Log":   rows[0],
-		"Attrs": attrs,
+		"Log": rows[0],
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpls.ExecuteTemplate(w, "detail.html", data); err != nil {
