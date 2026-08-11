@@ -6,11 +6,6 @@ database that exposes a `logs` view/table with the columns below.
 
 ## Features
 
-- **Strict DSL → SQL compiler pipeline** — no raw SQL ever reaches the
-  database. User input is parsed into a typed Query DSL, validated against
-  whitelists, normalized, then compiled to parameterized SQL.
-- **SQL-injection-safe** — every value is a `?` placeholder; field names and
-  operators are checked against fixed whitelists.
 - **Full-text search (FTS5)** — tokenized, relevance-ranked search over log
   body and service name via a contentless FTS5 index, combined with structured
   filters in a single query (hybrid search). Falls back to substring match on
@@ -22,8 +17,7 @@ database that exposes a `logs` view/table with the columns below.
   and a per-log detail page showing the full OTel payload (body + attributes).
 - **JSON API** — `POST /logs/query` accepts a JSON DSL query and returns JSON
   rows for programmatic use.
-- **URL-stateful** — filters are carried in the URL query string, so reloads
-  and shared URLs preserve the current view.
+
 
 ## Quick Start
 
@@ -62,10 +56,6 @@ database that exposes a `logs` view/table with the columns below.
   JOIN log_resource lr ON le.resource_id = lr.id;
   ```
 
-  With the current otel-sqlite schema (migration 005), event attributes are
-  stored inline in `log_event.attributes_json`; the legacy `log_attr` table is
-  no longer used. The detail page renders this JSON, or "No attributes." for
-  an empty object.
 
 ### Build & Run
 
@@ -237,25 +227,6 @@ A hybrid query combining full-text and structured filters:
 
 **Allowed fields:** `id`, `timestamp`, `severity`, `service_name`,
 `trace_id`, `span_id`, `body`.
-
-## Architecture
-
-```
-HTTP request
-    ↓
-api  — parse form/JSON → dsl.Query
-    ↓
-dsl  — Validate (whitelists, limits, depth) → Normalize (defaults, since→expr)
-    ↓
-compiler — Compile → parameterized SQL + args
-    ↓
-db  — Execute (read-only) → []LogRow
-    ↓
-HTML template / JSON response
-```
-
-Only `internal/compiler` constructs SQL. Only `internal/db` touches
-`database/sql`. The API layer never sees raw SQL.
 
 
 ## License
