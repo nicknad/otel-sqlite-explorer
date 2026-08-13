@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"log-explorer/internal/compiler"
@@ -33,9 +34,19 @@ func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 	var results []LogRow
 	for rows.Next() {
 		var r LogRow
-		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Severity, &r.ServiceName, &r.TraceID, &r.SpanID, &r.Body, &r.AttributesJSON); err != nil {
+		// text columns are nullable
+		// default to ""
+		var severity, serviceName, traceId, spanId, body, attrs sql.NullString
+
+		if err := rows.Scan(&r.ID, &r.Timestamp, &severity, &serviceName, &traceId, &spanId, &body, &attrs); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
+		r.Severity = severity.String
+		r.ServiceName = serviceName.String
+		r.TraceID = traceId.String
+		r.SpanID = spanId.String
+		r.Body = body.String
+		r.AttributesJSON = attrs.String
 		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {

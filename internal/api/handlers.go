@@ -98,6 +98,7 @@ type pageData struct {
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	pd := pageDataFromForm(r)
 	if err := s.runQuery(&pd); err != nil {
+		log.Printf("logs page query error: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
