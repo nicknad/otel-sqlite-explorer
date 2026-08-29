@@ -21,11 +21,22 @@ type LogRow struct {
 }
 
 // Execute compiles a query, runs it against the database, and returns matching rows.
+// Each query is bounded by the client's timeout so a hung operation cannot
+// block the HTTP handler forever.
 func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	rows, err := c.db.QueryContext(context.Background(), cq.SQL, cq.Args...)
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
+
+	// Fail fast when the deadline has already passed (e.g. a zero/negative
+	// configured timeout) instead of starting the query.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+
+	rows, err := c.db.QueryContext(ctx, cq.SQL, cq.Args...)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w\nSQL: %s\nArgs: %v", err, cq.SQL, cq.Args)
 	}

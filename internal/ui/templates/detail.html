@@ -2,56 +2,30 @@
 {{define "detail.html"}}
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Log #{{.Log.ID}} — Log Explorer</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #0d1117; color: #c9d1d9; padding: 1.5rem;
-    }
-    a { color: #58a6ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #58a6ff; }
-    .back { display: inline-block; margin-bottom: 1rem; font-size: 0.875rem; }
-    .card {
-      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-      padding: 1.25rem; margin-bottom: 1.5rem;
-    }
-    .grid { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1.5rem; font-size: 0.875rem; }
-    .grid dt { color: #8b949e; }
-    .grid dd { color: #c9d1d9; word-break: break-all; }
-    .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
-    .sev-{{.Log.Severity | lower}} { font-weight: 600; }
-    .sev-error { color: #f85149; }
-    .sev-warn  { color: #d29922; }
-    .sev-info  { color: #58a6ff; }
-    .sev-debug { color: #8b949e; }
-    h2 { font-size: 1.1rem; margin-bottom: 0.75rem; color: #58a6ff; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
-    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #21262d; }
-    th { background: #161b22; color: #8b949e; font-weight: 600; }
-    tr:hover td { background: #1c2128; }
-    pre {
-      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-      padding: 1rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
-      font-size: 0.8125rem;
-    }
-  </style>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
   <a class="back" href="/logs">← Back to logs</a>
   <h1>Log #{{.Log.ID}}</h1>
 
   <div class="card">
     <dl class="grid">
-      <dt>Timestamp</dt>      <dd class="mono">{{.Log.Timestamp | nstime}}</dd>
-      <dt>Severity</dt>       <dd class="sev-{{.Log.Severity | lower}}">{{.Log.Severity}}</dd>
-      <dt>Service</dt>        <dd>{{.Log.ServiceName}}</dd>
-      <dt>Trace ID</dt>       <dd class="mono">{{.Log.TraceID}}</dd>
-      <dt>Span ID</dt>        <dd class="mono">{{.Log.SpanID}}</dd>
+      <dt>Timestamp</dt>
+      <dd class="mono">{{.Log.Timestamp | nstime}}</dd>
+      <dt>Severity</dt>
+      <dd class="sev-{{.Log.Severity | lower}}">{{.Log.Severity}}</dd>
+      <dt>Service</dt>
+      <dd>{{.Log.ServiceName}}</dd>
+      <dt>Trace ID</dt>
+      <dd class="mono">{{.Log.TraceID}}</dd>
+      <dt>Span ID</dt>
+      <dd class="mono">{{.Log.SpanID}}</dd>
     </dl>
   </div>
 
@@ -65,5 +39,6 @@
   <p style="color:#8b949e">No attributes.</p>
   {{end}}
 </body>
+
 </html>
 {{end}}

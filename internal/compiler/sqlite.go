@@ -32,10 +32,16 @@ var fieldMap = map[string]string{
 	"body":            "body",
 }
 
+// isBlobField reports whether a DSL field / view column is a BLOB that must
+// be hex-encoded (lower(hex(...))) so string comparisons and scanning into Go
+// strings work correctly.
+func isBlobField(name string) bool {
+	return name == "trace_id" || name == "span_id"
+}
+
 // colExpr returns the SQL column expression for a DSL field, optionally
 // qualified with the logs table alias for FTS5 JOIN disambiguation.
-// BLOB columns (trace_id, span_id) are wrapped with hex() so string
-// comparisons and scanning into Go strings work correctly.
+// BLOB columns (trace_id, span_id) are wrapped with hex() by isBlobField.
 func colExpr(field string, qualify bool) (string, error) {
 	col, ok := fieldMap[field]
 	if !ok {
@@ -44,8 +50,7 @@ func colExpr(field string, qualify bool) (string, error) {
 	if qualify {
 		col = "logs." + col
 	}
-	switch field {
-	case "trace_id", "span_id":
+	if isBlobField(field) {
 		col = "lower(hex(" + col + "))"
 	}
 	return col, nil
@@ -72,8 +77,8 @@ func CompileGetByID(id int64) *CompiledQuery {
 // selectCols returns the comma-separated column list, optionally qualified
 // with the `logs.` table alias. Qualification is required when the FTS5
 // index is joined in, because logs_fts also exposes body/service_name.
-// BLOB columns (trace_id, span_id) are wrapped with hex() so they scan
-// as hex-encoded text strings in Go.
+// BLOB columns (trace_id, span_id) are wrapped with hex() by isBlobField so
+// they scan as hex-encoded text strings in Go.
 func selectCols(qualify bool) string {
 	parts := make([]string, len(logColumns))
 	for i, c := range logColumns {
@@ -81,8 +86,7 @@ func selectCols(qualify bool) string {
 		if qualify {
 			expr = "logs." + expr
 		}
-		switch c {
-		case "trace_id", "span_id":
+		if isBlobField(c) {
 			expr = "lower(hex(" + expr + "))"
 		}
 		parts[i] = expr

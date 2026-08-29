@@ -10,7 +10,6 @@ import (
 	"html/template"
 	"log"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"log-explorer/internal/compiler"
 	"log-explorer/internal/db"
 	"log-explorer/internal/dsl"
+	"log-explorer/internal/severity"
 	"log-explorer/internal/ui"
 )
 
@@ -63,9 +63,13 @@ func NewServer(database *db.Client) (*Server, error) {
 
 // RegisterRoutes attaches handlers to the given mux.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
+	// The logs page doubles as the site index.
+	mux.HandleFunc("GET /{$}", s.handleLogs)
 	mux.HandleFunc("GET /logs", s.handleLogs)
 	mux.HandleFunc("GET /logs/{id}", s.handleDetail)
 	mux.HandleFunc("POST /logs/query", s.handleQuery)
+	// Global stylesheet shared by every page.
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(ui.Static))))
 }
 
 // ============================================================================
@@ -76,6 +80,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 // filter form (with preserved values) plus result rows and pagination state.
 type pageData struct {
 	Logs     []db.LogRow
+	HasFTS   bool // full-text search available (logs_fts index present)
 	Service  string
 	Severity string
 	TraceID  string
@@ -106,62 +111,42 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
-// POST /logs/query  —  HTMX partial, JSON, or full page fallback
+// POST /logs/query  —  JSON query API (HTML rows when Accept omits JSON)
 // ============================================================================
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
-	ct := r.Header.Get("Content-Type")
-
-	// --- JSON API path ---
-	if strings.Contains(ct, "application/json") {
-		var q dsl.Query
-		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
-			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
-			return
-		}
-		if err := dsl.Validate(&q); err != nil {
-			http.Error(w, fmt.Sprintf("validation: %v", err), http.StatusBadRequest)
-			return
-		}
-		s.applyFTSFallback(&q)
-		dsl.Normalize(&q)
-		cq, err := compiler.Compile(&q)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("compile: %v", err), http.StatusBadRequest)
-			return
-		}
-		rows, err := s.db.Execute(cq)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("execute: %v", err), http.StatusBadRequest)
-			return
-		}
-		accept := r.Header.Get("Accept")
-		if strings.Contains(accept, "application/json") {
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			if err := json.NewEncoder(w).Encode(rows); err != nil {
-				log.Printf("encode JSON: %v", err)
-			}
-			return
-		}
-		// JSON in, HTML rows out (partial).
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.tmpls.ExecuteTemplate(w, "rows", map[string]any{"Logs": rows}); err != nil {
-			log.Printf("template: %v", err)
-		}
+	if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		http.Error(w, "expected Content-Type: application/json", http.StatusUnsupportedMediaType)
 		return
 	}
 
-	// --- Form path ---
-	pd := pageDataFromForm(r)
-	if err := s.runQuery(&pd); err != nil {
-		log.Printf("query error: %v", err)
-		http.Error(w, fmt.Sprintf("Query error: %v", err), http.StatusBadRequest)
+	var q dsl.Query
+	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
-
-	// Both HTMX and plain-POST get the full page. HTMX extracts #results
-	// via hx-select and swaps it in; plain POST re-renders the whole page.
-	s.renderLogsPage(w, &pd)
+	if err := dsl.Validate(&q); err != nil {
+		http.Error(w, fmt.Sprintf("validation: %v", err), http.StatusBadRequest)
+		return
+	}
+	rows, err := s.executeQuery(&q)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	accept := r.Header.Get("Accept")
+	if strings.Contains(accept, "application/json") {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if err := json.NewEncoder(w).Encode(rows); err != nil {
+			log.Printf("encode JSON: %v", err)
+		}
+		return
+	}
+	// JSON in, HTML rows out (partial).
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpls.ExecuteTemplate(w, "rows", map[string]any{"Logs": rows}); err != nil {
+		log.Printf("template: %v", err)
+	}
 }
 
 // renderLogsPage writes the full logs.html page.
@@ -213,16 +198,16 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 // pd.Logs plus pagination flags (HasPrev / HasNext). It queries limit+1 rows
 // to detect whether a next page exists.
 func (s *Server) runQuery(pd *pageData) error {
+	pd.HasFTS = s.db.HasFTS()
 	var exprs []dsl.Expr
 	if pd.Service != "" {
 		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpContains, Field: "service_name", Value: dsl.Value{Type: dsl.ValueString, String: pd.Service}})
 	}
 	if pd.Severity != "" {
-		threshold := severityNumberThreshold(pd.Severity)
 		exprs = append(exprs, dsl.BinaryExpr{
 			Op:    dsl.OpGte,
 			Field: "severity_number",
-			Value: dsl.Value{Type: dsl.ValueInt, Int: threshold},
+			Value: dsl.Value{Type: dsl.ValueInt, Int: severity.Number(pd.Severity)},
 		})
 	}
 	if pd.TraceID != "" {
@@ -266,24 +251,22 @@ func (s *Server) runQuery(pd *pageData) error {
 	if err := dsl.Validate(&q); err != nil {
 		return fmt.Errorf("validation: %w", err)
 	}
+
+	// Normalize the base query so the probe below uses effective defaults, and
+	// mirror those values back onto the page data for form re-rendering.
 	s.applyFTSFallback(&q)
 	dsl.Normalize(&q)
-
-	// Sync normalized defaults back to page data.
 	pd.Limit = q.Limit
 	pd.Offset = q.Offset
 	pd.Since = q.Since
 
-	// Query one extra row to detect a next page.
+	// Query one extra row to detect a next page. executeQuery re-runs the
+	// (idempotent) fallback/normalize on the probe copy.
 	probe := q
 	probe.Limit = min(q.Limit+1, dsl.MaxLimit+1)
-	cq, err := compiler.Compile(&probe)
+	rows, err := s.executeQuery(&probe)
 	if err != nil {
-		return fmt.Errorf("compile: %w", err)
-	}
-	rows, err := s.db.Execute(cq)
-	if err != nil {
-		return fmt.Errorf("execute: %w", err)
+		return err
 	}
 
 	pd.HasNext = len(rows) > q.Limit
@@ -293,6 +276,24 @@ func (s *Server) runQuery(pd *pageData) error {
 	pd.HasPrev = pd.Offset > 0
 	pd.Logs = rows
 	return nil
+}
+
+// executeQuery runs a validated DSL query through the full pipeline: FTS
+// fallback (when the backing DB has no logs_fts index), normalization,
+// compilation, and execution. Both the fallback rewrite and Normalize are
+// idempotent, so calling it on an already-normalized query is safe.
+func (s *Server) executeQuery(q *dsl.Query) ([]db.LogRow, error) {
+	s.applyFTSFallback(q)
+	dsl.Normalize(q)
+	cq, err := compiler.Compile(q)
+	if err != nil {
+		return nil, fmt.Errorf("compile: %w", err)
+	}
+	rows, err := s.db.Execute(cq)
+	if err != nil {
+		return nil, fmt.Errorf("execute: %w", err)
+	}
+	return rows, nil
 }
 
 // ============================================================================
@@ -326,17 +327,7 @@ func pageDataFromForm(r *http.Request) pageData {
 			pd.Offset = n
 		}
 	}
-	if pd.Since == "" && !hasFormParams(r) {
-		pd.Since = "24h" // default only on a bare GET /logs with no params
-	}
 	return pd
-}
-
-// hasFormParams reports whether the request carries any filter params,
-// distinguishing a bare page load (apply 24h default) from an explicit
-// "All time" selection (empty since, but other filters present).
-func hasFormParams(r *http.Request) bool {
-	return slices.ContainsFunc([]string{"service_name", "severity", "trace_id", "span_id", "body", "search", "since", "date_from", "date_to", "limit", "offset"}, r.Form.Has)
 }
 
 // parseDateTime parses a date or datetime string from the HTML form and returns
@@ -360,27 +351,6 @@ func parseDateTime(s string) (int64, error) {
 		return endOfDay.UnixNano(), nil
 	}
 	return 0, fmt.Errorf("cannot parse date: %q", s)
-}
-
-// severityNumberThreshold maps a user-visible severity label to the
-// corresponding OTel severity_number threshold for "this level and above"
-// filtering (OpGte). Thresholds match the iota values defined in
-// otel-sqlite/internal/model/logrecord.go:
-//
-//	Debug=5, Info=9, Warn=13, Error=17, Fatal=21
-func severityNumberThreshold(severity string) int64 {
-	switch strings.ToUpper(strings.TrimSpace(severity)) {
-	case "DEBUG":
-		return 5
-	case "INFO":
-		return 9
-	case "WARN":
-		return 13
-	case "ERROR":
-		return 17
-	default:
-		return 0
-	}
 }
 
 // andExprs combines a slice of expressions into a single AND tree.

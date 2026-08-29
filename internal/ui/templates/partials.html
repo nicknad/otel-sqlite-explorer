@@ -1,13 +1,14 @@
 {{/* partials.html — HTMX partial: returns only <tr> rows for tbody swap */}}
-{{define "rows"}}
-{{range .Logs}}
+  {{define "rows"}}
+  {{range .Logs}}
 <tr>
-  <td class="timestamp mono"><a href="/logs/{{.ID}}" style="color:inherit;text-decoration:none">{{.Timestamp | nstime}}</a></td>
+  <td class="timestamp mono"><a href="/logs/{{.ID}}" style="color:inherit;text-decoration:none">{{.Timestamp |
+      nstime}}</a></td>
   <td>{{.ServiceName}}</td>
   <td class="sev-{{.Severity | lower}}">{{.Severity}}</td>
   <td class="mono truncate">{{.TraceID}}</td>
   <td class="mono truncate">{{.SpanID}}</td>
-  <td class="truncate">{{.Body}}</td>
+  <td class="truncate body-cell" title="{{.Body}}">{{.Body}}</td>
 </tr>
 {{else}}
 <tr>

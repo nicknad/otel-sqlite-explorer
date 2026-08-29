@@ -1,98 +1,49 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Log Explorer</title>
-  <script src="https://unpkg.com/htmx.org@2.0.4"
-          integrity="sha384-Fg9CjNNFZ6/3XmzH5E2XDj15HPWFjfHZQ5NxPYhOgkX8f9lJ7MmLxNpDHyEaDkI"
-          crossorigin="anonymous"></script>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #0d1117;
-      color: #c9d1d9;
-      padding: 1.5rem;
-    }
-    h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #58a6ff; }
-    .filters { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1.5rem; align-items: end; }
-    .filters label { display: flex; flex-direction: column; font-size: 0.75rem; color: #8b949e; gap: 0.25rem; }
-    .filters input, .filters select {
-      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
-      padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.875rem; min-width: 120px;
-    }
-    .filters button {
-      background: #238636; border: none; color: #fff; padding: 0.4rem 1.2rem;
-      border-radius: 6px; font-size: 0.875rem; cursor: pointer; height: 2.2rem;
-    }
-    .filters button:hover:not(:disabled) { background: #2ea043; }
-    .filters button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
-    .filters button.secondary { background: #21262d; border: 1px solid #30363d; }
-    .filters button.secondary:hover:not(:disabled) { background: #30363d; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
-    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #21262d; }
-    th { background: #161b22; color: #8b949e; font-weight: 600; position: sticky; top: 0; }
-    tr:hover td { background: #1c2128; }
-    .sev-error { color: #f85149; font-weight: 600; }
-    .sev-warn  { color: #d29922; }
-    .sev-info  { color: #58a6ff; }
-    .sev-debug { color: #8b949e; }
-    .timestamp { font-variant-numeric: tabular-nums; color: #8b949e; white-space: nowrap; }
-    .timestamp a { color: inherit; text-decoration: none; }
-    .timestamp a:hover { color: #58a6ff; text-decoration: underline; }
-    .truncate { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 0.75rem; }
-    #spinner {
-      display: none; text-align: center; padding: 2rem; color: #8b949e;
-    }
-    .htmx-request#spinner { display: block; }
-    .pager { display: flex; gap: 0.5rem; align-items: center; margin-top: 1rem; color: #8b949e; font-size: 0.8125rem; }
-  </style>
+<script src="/static/htmx.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
   <h1>🔍 Log Explorer</h1>
 
-  <!-- Full-text search bar (FTS5). Maps to a DSL match node. -->
-  <form class="filters" style="margin-bottom:1rem;"
-        id="search-form"
-        method="get"
-        action="/logs"
-        hx-get="/logs"
-        hx-target="#results"
-        hx-swap="outerHTML"
-        hx-indicator="#spinner"
-        hx-select="#results"
-        hx-push-url="true"
-        hx-include="#log-form">
+  <!-- Full-text search bar (FTS5). Maps to a DSL match node.
+       Rendered only when the backing database exposes a logs_fts index. -->
+  {{if .HasFTS}}
+  <form class="filters" style="margin-bottom:1rem;" id="search-form" method="get" action="/logs" hx-get="/logs"
+    hx-target="#results" hx-swap="outerHTML" hx-indicator="#spinner" hx-select="#results" hx-push-url="true"
+    hx-include="#log-form">
     <label style="flex:1; min-width:240px;"> Search (full-text)
       <input type="text" name="search" placeholder="e.g. timeout gateway" value="{{.Search}}" style="min-width:100%">
       <small style="color:#8b949e">FTS5: words match independently across body &amp; service</small>
     </label>
-    <button type="submit">Search</button>
+    <button type="submit" class="fts-button">Search</button>
   </form>
+  {{else}}
+  <p class="fts-note">
+    Full-text search unavailable: this database has no <code>logs_fts</code> index.
+    Use the &ldquo;Body&rdquo; filter below for substring matching instead.
+  </p>
+  {{end}}
 
   <!-- Filter form — submits via HTMX (swaps tbody + pager) or plain POST. -->
-  <form class="filters"
-        id="log-form"
-        method="get"
-        action="/logs"
-        hx-get="/logs"
-        hx-target="#results"
-        hx-swap="outerHTML"
-        hx-indicator="#spinner"
-        hx-select="#results"
-        hx-push-url="true">
+  <form class="filters" id="log-form" method="get" action="/logs" hx-get="/logs" hx-target="#results"
+    hx-swap="outerHTML" hx-indicator="#spinner" hx-select="#results" hx-push-url="true">
     <label> Service
       <input type="text" name="service_name" placeholder="my-service" value="{{.Service}}">
     </label>
     <label> Severity
       <select name="severity">
         <option value="">Any</option>
-        <option value="ERROR" {{if eq .Severity "ERROR"}}selected{{end}}>ERROR</option>
-        <option value="WARN"  {{if eq .Severity "WARN"}}selected{{end}}>WARN</option>
-        <option value="INFO"  {{if eq .Severity "INFO"}}selected{{end}}>INFO</option>
-        <option value="DEBUG" {{if eq .Severity "DEBUG"}}selected{{end}}>DEBUG</option>
+        <option value="ERROR" {{if eq .Severity "ERROR" }}selected{{end}}>ERROR</option>
+        <option value="WARN" {{if eq .Severity "WARN" }}selected{{end}}>WARN</option>
+        <option value="INFO" {{if eq .Severity "INFO" }}selected{{end}}>INFO</option>
+        <option value="DEBUG" {{if eq .Severity "DEBUG" }}selected{{end}}>DEBUG</option>
       </select>
     </label>
     <label> Trace ID
@@ -106,12 +57,12 @@
     </label>
     <label> Since
       <select name="since">
-        <option value=""       {{if eq .Since ""}}selected{{end}}>All time</option>
-        <option value="1h"   {{if eq .Since "1h"}}selected{{end}}>1 hour</option>
-        <option value="6h"   {{if eq .Since "6h"}}selected{{end}}>6 hours</option>
-        <option value="24h"  {{if eq .Since "24h"}}selected{{end}}>24 hours</option>
-        <option value="72h"  {{if eq .Since "72h"}}selected{{end}}>3 days</option>
-        <option value="168h" {{if eq .Since "168h"}}selected{{end}}>7 days</option>
+        <option value="" {{if eq .Since "" }}selected{{end}}>All time</option>
+        <option value="1h" {{if eq .Since "1h" }}selected{{end}}>1 hour</option>
+        <option value="6h" {{if eq .Since "6h" }}selected{{end}}>6 hours</option>
+        <option value="24h" {{if eq .Since "24h" }}selected{{end}}>24 hours</option>
+        <option value="72h" {{if eq .Since "72h" }}selected{{end}}>3 days</option>
+        <option value="168h" {{if eq .Since "168h" }}selected{{end}}>7 days</option>
       </select>
     </label>
     <label> From
@@ -148,12 +99,13 @@
 
     <!-- Pagination — submits the same form with a modified offset. -->
     <div id="pager" class="pager">
-      <button type="submit" form="log-form" name="offset" value="{{sub .Offset .Limit}}"
-              class="secondary" {{if not .HasPrev}}disabled{{end}}>◀ Prev</button>
+      <button type="submit" form="log-form" name="offset" value="{{sub .Offset .Limit}}" class="secondary" {{if not
+        .HasPrev}}disabled{{end}}>◀ Prev</button>
       <span>showing {{len .Logs}} rows from offset {{.Offset}}</span>
-      <button type="submit" form="log-form" name="offset" value="{{add .Offset .Limit}}"
-              class="secondary" {{if not .HasNext}}disabled{{end}}>Next ▶</button>
+      <button type="submit" form="log-form" name="offset" value="{{add .Offset .Limit}}" class="secondary" {{if not
+        .HasNext}}disabled{{end}}>Next ▶</button>
     </div>
   </div>
 </body>
+
 </html>

@@ -11,7 +11,7 @@ import (
 	"log-explorer/internal/compiler"
 	"log-explorer/internal/db"
 	"log-explorer/internal/dsl"
-	"log-explorer/internal/migrate"
+	"log-explorer/internal/schema"
 
 	_ "modernc.org/sqlite"
 )
@@ -46,49 +46,9 @@ func setupTestDB(t *testing.T) string {
 		t.Fatalf("open write db: %v", err)
 	}
 
-	// Match the production schema exactly: log_resource + log_event with
-	// inline event attributes + logs VIEW (which joins event and resource).
-	schema := `
-		CREATE TABLE log_resource (
-			id TEXT PRIMARY KEY,
-			service_name TEXT NOT NULL,
-			host_name TEXT,
-			schema_url TEXT,
-			attributes_json TEXT
-		);
-
-		CREATE TABLE log_event (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			resource_id TEXT NOT NULL,
-			timestamp_ns INTEGER NOT NULL,
-			observed_timestamp_ns INTEGER NOT NULL,
-			severity_number INTEGER NOT NULL,
-			severity_text TEXT,
-			trace_id BLOB,
-			span_id BLOB,
-			body TEXT,
-			event_name TEXT,
-			flags INTEGER NOT NULL DEFAULT 0,
-			dropped_attributes_count INTEGER NOT NULL DEFAULT 0,
-			scope_name TEXT,
-			scope_version TEXT,
-			attributes_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY (resource_id) REFERENCES log_resource(id)
-		);
-
-		CREATE VIEW logs AS
-		SELECT
-			le.id                AS id,
-			le.timestamp_ns     AS timestamp_ns,
-			le.severity_text     AS severity_text,
-			le.severity_number   AS severity_number,
-			le.trace_id          AS trace_id,
-			le.span_id           AS span_id,
-			le.body              AS body,
-			le.attributes_json   AS attributes_json,
-			lr.service_name      AS service_name
-		FROM log_event le
-		JOIN log_resource lr ON le.resource_id = lr.id;`
+	// Match the production schema exactly (shared DDL: log_resource +
+	// log_event with inline event attributes + logs VIEW).
+	schema := schema.DDL
 
 	if _, err := conn.Exec(schema); err != nil {
 		_ = conn.Close()
@@ -160,10 +120,10 @@ func setupTestDB(t *testing.T) string {
 	return path
 }
 
-// setupTestDBWithFTS is like setupTestDB but also creates and populates an FTS5
-// index (logs_fts) over body and service_name, using the same migrate package
-// the production maintenance tool uses, so MatchExpr queries can be exercised
-// end-to-end. No triggers are created.
+// setupTestDBWithFTS is like setupTestDB but also creates and populates a
+// contentless FTS5 index (logs_fts) over body and service_name — the same
+// shape the otel-sqlite write sidecar owns — so MatchExpr queries can be
+// exercised end-to-end without any maintenance tooling.
 func setupTestDBWithFTS(t *testing.T) string {
 	t.Helper()
 	path := setupTestDB(t)
@@ -174,8 +134,16 @@ func setupTestDBWithFTS(t *testing.T) string {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if _, err := migrate.RebuildFTS(conn); err != nil {
-		t.Fatalf("rebuild fts: %v", err)
+	if _, err := conn.Exec(`
+		CREATE VIRTUAL TABLE logs_fts USING fts5(
+			body,
+			service_name,
+			content=''
+		);
+		INSERT INTO logs_fts(rowid, body, service_name)
+		SELECT id, body, service_name FROM logs;
+	`); err != nil {
+		t.Fatalf("create fts index: %v", err)
 	}
 	return path
 }

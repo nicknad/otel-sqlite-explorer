@@ -191,3 +191,44 @@ func TestCompilerMatchDeterministic(t *testing.T) {
 		t.Errorf("non-deterministic match compilation")
 	}
 }
+
+func TestCompilerGetByID(t *testing.T) {
+	cq := compiler.CompileGetByID(42)
+	want := "SELECT id, timestamp_ns, severity_text, service_name, lower(hex(trace_id)), lower(hex(span_id)), body, attributes_json " +
+		"FROM logs WHERE id = ? LIMIT 1"
+	if cq.SQL != want {
+		t.Errorf("SQL mismatch:\ngot:  %s\nwant: %s", cq.SQL, want)
+	}
+	if !reflect.DeepEqual(cq.Args, []any{int64(42)}) {
+		t.Errorf("args mismatch: %v", cq.Args)
+	}
+}
+
+func TestCompilerInjectionAttemptIsParameterized(t *testing.T) {
+	payload := `{"where": {"eq": ["body", "' OR '1'='1"]}, "limit": 10}`
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(payload), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	dsl.Normalize(&q)
+
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The hostile text must never appear in the SQL string; it travels only
+	// as a bound argument.
+	if strings.Contains(cq.SQL, "' OR ") {
+		t.Errorf("SQL contains raw injection value: %s", cq.SQL)
+	}
+	if !strings.Contains(cq.SQL, "body = ?") {
+		t.Errorf("expected parameterized body comparison, got: %s", cq.SQL)
+	}
+	if len(cq.Args) != 3 || cq.Args[0] != "' OR '1'='1" {
+		t.Errorf("expected injection string as first bound arg, got %v", cq.Args)
+	}
+}

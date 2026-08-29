@@ -76,16 +76,6 @@ func (h *e2eHarness) get(t *testing.T, pathAndQuery string) *http.Response {
 	return resp
 }
 
-// postForm performs a form-encoded POST request.
-func (h *e2eHarness) postForm(t *testing.T, path string, form url.Values) *http.Response {
-	t.Helper()
-	resp, err := h.server.Client().PostForm(h.server.URL+path, form)
-	if err != nil {
-		t.Fatalf("POST %s: %v", path, err)
-	}
-	return resp
-}
-
 // postJSON performs a JSON POST request.
 func (h *e2eHarness) postJSON(t *testing.T, path string, payload any) *http.Response {
 	t.Helper()
@@ -178,8 +168,7 @@ func TestE2E_MainPageRendersAllRows(t *testing.T) {
 
 func TestE2E_MainPageEmptyState(t *testing.T) {
 	h := newE2EHarness(t, false)
-	form := url.Values{"service_name": {"nonexistent-svc"}}
-	resp := h.postForm(t, "/logs/query", form)
+	resp := h.get(t, "/logs?service_name=nonexistent-svc")
 	assertStatus(t, resp, 200)
 	assertBodyContains(t, resp, "No logs found")
 }
@@ -391,13 +380,12 @@ func TestE2E_JSONQueryShorthandFormat(t *testing.T) {
 }
 
 // ==========================================================================
-// HTMX HTML partial
+// Query page results
 // ==========================================================================
 
-func TestE2E_HTMXPartial(t *testing.T) {
+func TestE2E_QueryPageRows(t *testing.T) {
 	h := newE2EHarness(t, false)
-	form := url.Values{"service_name": {"api-gateway"}, "limit": {"10"}}
-	resp := h.postForm(t, "/logs/query", form)
+	resp := h.get(t, "/logs?service_name=api-gateway&limit=10")
 	assertStatus(t, resp, 200)
 	body := readBody(t, resp)
 	if !strings.Contains(body, "<tr>") {
@@ -440,9 +428,9 @@ func TestE2E_PaginationLastPageHasNoNext(t *testing.T) {
 // Error handling
 // ==========================================================================
 
-func TestE2E_InvalidFormLimit(t *testing.T) {
+func TestE2E_InvalidLimit(t *testing.T) {
 	h := newE2EHarness(t, false)
-	resp := h.postForm(t, "/logs/query", url.Values{"limit": {"notanumber"}})
+	resp := h.get(t, "/logs?limit=notanumber")
 	assertStatus(t, resp, 200)
 }
 
@@ -452,14 +440,14 @@ func TestE2E_InvalidFormLimit(t *testing.T) {
 
 func TestE2E_XSSInServiceName(t *testing.T) {
 	h := newE2EHarness(t, false)
-	resp := h.postForm(t, "/logs/query", url.Values{"service_name": {`<script>alert(1)</script>`}})
+	resp := h.get(t, "/logs?service_name="+url.QueryEscape(`<script>alert(1)</script>`))
 	assertStatus(t, resp, 200)
 	assertBodyNotContains(t, resp, `<script>alert(1)</script>`)
 }
 
 func TestE2E_XSSInBody(t *testing.T) {
 	h := newE2EHarness(t, false)
-	resp := h.postForm(t, "/logs/query", url.Values{"body": {`<img src=x onerror=alert(1)>`}})
+	resp := h.get(t, "/logs?body="+url.QueryEscape(`<img src=x onerror=alert(1)>`))
 	assertStatus(t, resp, 200)
 	assertBodyNotContains(t, resp, `<img src=x onerror=alert(1)>`)
 }
@@ -605,10 +593,9 @@ func TestE2E_ConcurrentRequests(t *testing.T) {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
 
-				form := url.Values{"service_name": {"api-gateway"}}
-				resp = h.postForm(t, "/logs/query", form)
+				resp = h.get(t, "/logs?service_name=api-gateway")
 				if resp.StatusCode != http.StatusOK {
-					errs <- fmt.Errorf("g%d: POST /logs/query returned %d", id, resp.StatusCode)
+					errs <- fmt.Errorf("g%d: GET /logs returned %d", id, resp.StatusCode)
 					return
 				}
 				_, _ = io.Copy(io.Discard, resp.Body)

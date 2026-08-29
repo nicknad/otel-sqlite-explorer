@@ -7,15 +7,23 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver registration
 )
 
+// DefaultQueryTimeout bounds every Execute call so a hung or oversized
+// SQLite operation cannot block the HTTP handler forever. It exceeds the
+// 5s busy_timeout so lock contention surfaces as "database is locked"
+// rather than "context deadline exceeded".
+const DefaultQueryTimeout = 10 * time.Second
+
 // Client holds the read-only SQLite connection.
 type Client struct {
-	db     *sql.DB
-	mu     sync.Mutex
-	hasFTS bool // true if a logs_fts table is present
+	db      *sql.DB
+	mu      sync.Mutex
+	hasFTS  bool // true if a logs_fts table is present
+	timeout time.Duration
 }
 
 // Open opens a read-only connection to the SQLite database at path.
@@ -57,7 +65,7 @@ func Open(path string) (*Client, error) {
 	var name string
 	_ = db.QueryRowContext(context.Background(), "SELECT name FROM sqlite_master WHERE type='table' AND name='logs_fts' LIMIT 1").Scan(&name)
 
-	return &Client{db: db, hasFTS: name == "logs_fts"}, nil
+	return &Client{db: db, hasFTS: name == "logs_fts", timeout: DefaultQueryTimeout}, nil
 }
 
 // DB returns the underlying *sql.DB for query execution.
