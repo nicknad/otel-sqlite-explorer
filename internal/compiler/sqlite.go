@@ -251,7 +251,7 @@ func (c *exprCompiler) compileLogical(e *dsl.LogicalExpr) (sql string, args []an
 	}
 
 	logicalOp := "AND"
-	if e.Op == dsl.OpOr {
+	if e.LogicalOp == dsl.OpOr {
 		logicalOp = "OR"
 	}
 

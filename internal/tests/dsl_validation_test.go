@@ -74,9 +74,9 @@ func TestDeeplyNestedExpressionIsRejected(t *testing.T) {
 	current := dsl.Expr(leaf)
 	for range 10 {
 		current = dsl.LogicalExpr{
-			Op:    dsl.OpAnd,
-			Left:  current,
-			Right: leaf,
+			LogicalOp: dsl.OpAnd,
+			Left:      current,
+			Right:     leaf,
 		}
 	}
 
@@ -138,9 +138,9 @@ func TestMatchValidIsAllowed(t *testing.T) {
 func TestMatchInLogicalTreeIsAllowed(t *testing.T) {
 	q := dsl.Query{
 		Where: dsl.LogicalExpr{
-			Op:    dsl.OpAnd,
-			Left:  dsl.BinaryExpr{Op: dsl.OpEq, Field: "severity", Value: dsl.Value{Type: dsl.ValueString, String: "ERROR"}},
-			Right: dsl.MatchExpr{Query: "timeout"},
+			LogicalOp: dsl.OpAnd,
+			Left:      dsl.BinaryExpr{Op: dsl.OpEq, Field: "severity", Value: dsl.Value{Type: dsl.ValueString, String: "ERROR"}},
+			Right:     dsl.MatchExpr{Query: "timeout"},
 		},
 		Limit: 100,
 	}

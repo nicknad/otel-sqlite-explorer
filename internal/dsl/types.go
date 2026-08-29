@@ -82,9 +82,9 @@ func (BinaryExpr) exprNode() {}
 
 // LogicalExpr combines two sub-expressions with AND / OR.
 type LogicalExpr struct {
-	Op    LogicalOp `json:"logical_op"`
-	Left  Expr      `json:"left"`
-	Right Expr      `json:"right"`
+	LogicalOp LogicalOp `json:"logical_op"`
+	Left      Expr      `json:"left"`
+	Right     Expr      `json:"right"`
 }
 
 func (LogicalExpr) exprNode() {}
@@ -288,7 +288,7 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 		if len(exprs) != 2 {
 			return nil, fmt.Errorf("%s requires exactly 2 sub-expressions, got %d", opKey, len(exprs))
 		}
-		return LogicalExpr{Op: LogicalOp(opKey), Left: exprs[0], Right: exprs[1]}, nil
+		return LogicalExpr{LogicalOp: LogicalOp(opKey), Left: exprs[0], Right: exprs[1]}, nil
 	}
 
 	// match is a leaf with a single string value (FTS5 query syntax).
@@ -310,7 +310,7 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("%s requires [field, value], got %d elements", opKey, len(parts))
 		}
-		return BinaryExpr{Op: Op(opKey), Field: parts[0], Value: inferValue(parts[1])}, nil
+		return BinaryExpr{Op: Op(opKey), Field: parts[0], Value: stringToValue(parts[1])}, nil
 
 	case OpBetween:
 		arr, err := unmarshalMixedSlice(opVal)
@@ -400,8 +400,8 @@ func unmarshalMixedSlice(data json.RawMessage) ([]any, error) {
 	return raw, nil
 }
 
-// inferValue creates a Value from a JSON string, trying to parse numbers.
-func inferValue(s string) Value {
+// stringToValue creates a Value from a JSON string, trying to parse numbers.
+func stringToValue(s string) Value {
 	// If it looks like a number, parse as int.
 	if s != "" && s[0] >= '0' && s[0] <= '9' {
 		// Try int
@@ -466,7 +466,7 @@ func exprFromVerbose(j *exprJSON) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return LogicalExpr{Op: j.LogicalOp, Left: left, Right: right}, nil
+		return LogicalExpr{LogicalOp: j.LogicalOp, Left: left, Right: right}, nil
 	case "match":
 		return MatchExpr{Query: j.Query}, nil
 	default:

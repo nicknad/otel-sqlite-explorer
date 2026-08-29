@@ -254,7 +254,7 @@ func (s *Server) runQuery(pd *pageData) error {
 
 	// Normalize the base query so the probe below uses effective defaults, and
 	// mirror those values back onto the page data for form re-rendering.
-	s.applyFTSFallback(&q)
+	s.rewriteMatchToContains(&q)
 	dsl.Normalize(&q)
 	pd.Limit = q.Limit
 	pd.Offset = q.Offset
@@ -283,7 +283,7 @@ func (s *Server) runQuery(pd *pageData) error {
 // compilation, and execution. Both the fallback rewrite and Normalize are
 // idempotent, so calling it on an already-normalized query is safe.
 func (s *Server) executeQuery(q *dsl.Query) ([]db.LogRow, error) {
-	s.applyFTSFallback(q)
+	s.rewriteMatchToContains(q)
 	dsl.Normalize(q)
 	cq, err := compiler.Compile(q)
 	if err != nil {
@@ -361,16 +361,16 @@ func andExprs(exprs []dsl.Expr) dsl.Expr {
 	}
 	result := exprs[0]
 	for _, e := range exprs[1:] {
-		result = dsl.LogicalExpr{Op: dsl.OpAnd, Left: result, Right: e}
+		result = dsl.LogicalExpr{LogicalOp: dsl.OpAnd, Left: result, Right: e}
 	}
 	return result
 }
 
-// applyFTSFallback rewrites any MatchExpr nodes to body substring matches when
-// the backing database has no logs_fts full-text index. Must run after Validate
-// and before Normalize so default ordering is applied correctly for the
-// fallback path.
-func (s *Server) applyFTSFallback(q *dsl.Query) {
+// rewriteMatchToContains rewrites any MatchExpr nodes to body substring
+// matches when the backing database has no logs_fts full-text index. Must run
+// after Validate and before Normalize so default ordering is applied correctly
+// for the fallback path.
+func (s *Server) rewriteMatchToContains(q *dsl.Query) {
 	if s.db.HasFTS() || q.Where == nil {
 		return
 	}

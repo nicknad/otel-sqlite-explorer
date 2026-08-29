@@ -80,8 +80,8 @@ func validateExpr(e Expr) error {
 		return validateValue(expr.Op, &expr.Value)
 
 	case LogicalExpr:
-		if !AllowedLogicalOps[expr.Op] {
-			return fmt.Errorf("unknown logical operator %q", expr.Op)
+		if !AllowedLogicalOps[expr.LogicalOp] {
+			return fmt.Errorf("unknown logical operator %q", expr.LogicalOp)
 		}
 		if err := validateExpr(expr.Left); err != nil {
 			return err

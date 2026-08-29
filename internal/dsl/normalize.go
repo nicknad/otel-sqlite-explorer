@@ -41,9 +41,9 @@ func Normalize(q *Query) {
 				q.Where = tsExpr
 			} else {
 				q.Where = LogicalExpr{
-					Op:    OpAnd,
-					Left:  tsExpr,
-					Right: q.Where,
+					LogicalOp: OpAnd,
+					Left:      tsExpr,
+					Right:     q.Where,
 				}
 			}
 		}
