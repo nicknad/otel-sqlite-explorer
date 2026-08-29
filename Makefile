@@ -6,7 +6,17 @@ BIN     := bin/log-explorer
 MOCK_DB := demo/logs.db
 ADDR    := :8080
 
-.PHONY: all build fmt test lint vet mock-db serve-mock run clean
+# `rm` is not available on Windows, and `del` rejects forward-slash paths, so
+# the delete command and its arguments are picked per OS.
+ifeq ($(OS),Windows_NT)
+  RM        := del /q
+  CLEANARGS := $(subst /,\,$(BIN) $(MOCK_DB))
+else
+  RM        := rm -f
+  CLEANARGS := $(BIN) $(MOCK_DB)
+endif
+
+.PHONY: all build fmt test lint vet mock-db serve-mock run-mock clean-mock
 
 all: build
 
@@ -41,4 +51,4 @@ run-mock: build mock-db
 	$(BIN) -db $(MOCK_DB) -addr $(ADDR)
 
 clean-mock:
-	-rm -f $(BIN) $(MOCK_DB)
+	-$(RM) $(CLEANARGS)
