@@ -129,6 +129,7 @@ Response:
     "id": 1234,
     "timestamp": 1782924637435495963,
     "severity": "ERROR",
+    "severity_number": 17,
     "service_name": "api-gateway",
     "trace_id": "0200000000000000f900000000000000",
     "span_id": "7f851e0000000000",
@@ -222,8 +223,8 @@ A hybrid query combining full-text and structured filters:
 | `limit`  | int      | 1–1000, default 100                          |
 | `offset` | int      | Pagination offset, default 0                 |
 
-**Allowed fields:** `id`, `timestamp`, `severity`, `service_name`,
-`trace_id`, `span_id`, `body`.
+**Allowed fields:** `id`, `timestamp`, `severity`, `severity_number`,
+`service_name`, `trace_id`, `span_id`, `body`, `attributes_json`.
 
 
 ## License

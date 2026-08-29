@@ -39,7 +39,7 @@ func TestCompilerDeterminism(t *testing.T) {
 
 	// Expected: normalized adds default ORDER BY timestamp_ns DESC.
 	// Logical expressions are wrapped in parentheses by the compiler.
-	expectedSQL := "SELECT id, timestamp_ns, severity_text, service_name, lower(hex(trace_id)), lower(hex(span_id)), body, attributes_json " +
+	expectedSQL := "SELECT id, timestamp_ns, severity_text, severity_number, service_name, lower(hex(trace_id)), lower(hex(span_id)), body, attributes_json " +
 		"FROM logs WHERE (service_name = ? AND body LIKE ?) " +
 		"ORDER BY timestamp_ns DESC LIMIT ? OFFSET ?"
 	expectedArgs := []any{"api", "%timeout%", 100, 0}
@@ -192,9 +192,35 @@ func TestCompilerMatchDeterministic(t *testing.T) {
 	}
 }
 
+func TestCompilerPartialSelect(t *testing.T) {
+	input := `{"select": "severity, body", "limit": 10}`
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(input), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	dsl.Normalize(&q)
+
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	wantSQL := "SELECT severity_text, body FROM logs ORDER BY timestamp_ns DESC LIMIT ? OFFSET ?"
+	if cq.SQL != wantSQL {
+		t.Errorf("SQL mismatch:\ngot:  %s\nwant: %s", cq.SQL, wantSQL)
+	}
+	wantFields := []string{"severity", "body"}
+	if !reflect.DeepEqual(cq.Fields, wantFields) {
+		t.Errorf("fields mismatch:\ngot:  %v\nwant: %v", cq.Fields, wantFields)
+	}
+}
+
 func TestCompilerGetByID(t *testing.T) {
 	cq := compiler.CompileGetByID(42)
-	want := "SELECT id, timestamp_ns, severity_text, service_name, lower(hex(trace_id)), lower(hex(span_id)), body, attributes_json " +
+	want := "SELECT id, timestamp_ns, severity_text, severity_number, service_name, lower(hex(trace_id)), lower(hex(span_id)), body, attributes_json " +
 		"FROM logs WHERE id = ? LIMIT 1"
 	if cq.SQL != want {
 		t.Errorf("SQL mismatch:\ngot:  %s\nwant: %s", cq.SQL, want)

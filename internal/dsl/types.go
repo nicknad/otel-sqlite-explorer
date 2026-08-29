@@ -132,6 +132,7 @@ var AllowedFields = map[string]bool{
 	"trace_id":        true,
 	"span_id":         true,
 	"body":            true,
+	"attributes_json": true,
 }
 
 var AllowedOps = map[Op]bool{

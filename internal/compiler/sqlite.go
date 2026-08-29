@@ -12,9 +12,12 @@ import (
 )
 
 // CompiledQuery holds a safe, parameterized SQL string and its arguments.
+// Fields lists the DSL field names in SELECT order (nil means all default
+// fields); it is used by the db package to scan rows into LogRow.
 type CompiledQuery struct {
-	SQL  string
-	Args []any
+	SQL    string
+	Args   []any
+	Fields []string
 }
 
 // fieldMap translates DSL field names to SQL column expressions.
@@ -30,6 +33,7 @@ var fieldMap = map[string]string{
 	"trace_id":        "trace_id",
 	"span_id":         "span_id",
 	"body":            "body",
+	"attributes_json": "attributes_json",
 }
 
 // isBlobField reports whether a DSL field / view column is a BLOB that must
@@ -60,7 +64,14 @@ func colExpr(field string, qualify bool) (string, error) {
 // scan order. These are used to build the SELECT list; BLOB columns
 // (trace_id, span_id) are wrapped with hex() by selectCols.
 var logColumns = []string{
-	"id", "timestamp_ns", "severity_text", "service_name", "trace_id", "span_id", "body", "attributes_json",
+	"id", "timestamp_ns", "severity_text", "severity_number", "service_name", "trace_id", "span_id", "body", "attributes_json",
+}
+
+// DefaultFields lists the DSL field names returned by a "*" select, in LogRow
+// scan order. The db package scans rows against this list when a query does
+// not restrict its select list.
+var DefaultFields = []string{
+	"id", "timestamp", "severity", "severity_number", "service_name", "trace_id", "span_id", "body", "attributes_json",
 }
 
 // Constant SQL fragments.
@@ -69,8 +80,9 @@ const fromLogs = "FROM logs"
 // CompileGetByID builds a parameterized SELECT for a single log row by id.
 func CompileGetByID(id int64) *CompiledQuery {
 	return &CompiledQuery{
-		SQL:  "SELECT " + selectCols(false) + " " + fromLogs + " WHERE id = ? LIMIT 1",
-		Args: []any{id},
+		SQL:    "SELECT " + selectCols(false) + " " + fromLogs + " WHERE id = ? LIMIT 1",
+		Args:   []any{id},
+		Fields: DefaultFields,
 	}
 }
 
@@ -94,6 +106,34 @@ func selectCols(qualify bool) string {
 	return strings.Join(parts, ", ")
 }
 
+// selectList turns a Query.Select value ("*" or a comma-separated DSL field
+// list) into the SQL column list plus the DSL field names in SELECT order.
+// Qualification and BLOB hex-wrapping are applied per column. An empty or "*"
+// select expands to the default column set.
+func selectList(sel string, qualify bool) (string, []string, error) {
+	if strings.TrimSpace(sel) == "" {
+		sel = "*"
+	}
+	fields := make([]string, 0, len(logColumns))
+	cols := make([]string, 0, len(logColumns))
+	for part := range strings.SplitSeq(sel, ",") {
+		f := strings.TrimSpace(part)
+		if f == "" {
+			continue
+		}
+		if f == "*" {
+			return selectCols(qualify), DefaultFields, nil
+		}
+		col, err := colExpr(f, qualify)
+		if err != nil {
+			return "", nil, err
+		}
+		cols = append(cols, col)
+		fields = append(fields, f)
+	}
+	return strings.Join(cols, ", "), fields, nil
+}
+
 // Compile translates a validated, normalized DSL Query into a parameterized
 // SQLite SELECT statement.
 //
@@ -111,8 +151,12 @@ func Compile(q *dsl.Query) (*CompiledQuery, error) {
 	var args []any
 
 	// ---- SELECT ----
+	sel, fields, err := selectList(q.Select, matched)
+	if err != nil {
+		return nil, fmt.Errorf("select: %w", err)
+	}
 	b.WriteString("SELECT ")
-	b.WriteString(selectCols(matched))
+	b.WriteString(sel)
 
 	// ---- FROM (with optional FTS5 join) ----
 	b.WriteString(" ")
@@ -160,7 +204,7 @@ func Compile(q *dsl.Query) (*CompiledQuery, error) {
 	b.WriteString(" LIMIT ? OFFSET ?")
 	args = append(args, q.Limit, q.Offset)
 
-	return &CompiledQuery{SQL: b.String(), Args: args}, nil
+	return &CompiledQuery{SQL: b.String(), Args: args, Fields: fields}, nil
 }
 
 // exprCompiler carries compilation context (column qualification) through the

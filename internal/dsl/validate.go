@@ -25,7 +25,7 @@ func Validate(q *Query) error {
 			}
 			if !AllowedFields[f] {
 				return fmt.Errorf("select: unknown field %q "+
-					"(allowed: timestamp, severity, service_name, trace_id, span_id, body)", f)
+					"(allowed: id, timestamp, severity, severity_number, service_name, trace_id, span_id, body, attributes_json)", f)
 			}
 		}
 	}

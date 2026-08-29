@@ -13,6 +13,7 @@ type LogRow struct {
 	ID             int64  `json:"id"`
 	Timestamp      int64  `json:"timestamp"`
 	Severity       string `json:"severity"`
+	SeverityNumber int64  `json:"severity_number"`
 	ServiceName    string `json:"service_name"`
 	TraceID        string `json:"trace_id"`
 	SpanID         string `json:"span_id"`
@@ -42,6 +43,11 @@ func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
+	fields := cq.Fields
+	if fields == nil {
+		fields = compiler.DefaultFields
+	}
+
 	var results []LogRow
 	for rows.Next() {
 		var r LogRow
@@ -49,7 +55,33 @@ func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 		// default to ""
 		var severity, serviceName, traceId, spanId, body, attrs sql.NullString
 
-		if err := rows.Scan(&r.ID, &r.Timestamp, &severity, &serviceName, &traceId, &spanId, &body, &attrs); err != nil {
+		targets := make([]any, len(fields))
+		for i, f := range fields {
+			switch f {
+			case "id":
+				targets[i] = &r.ID
+			case "timestamp":
+				targets[i] = &r.Timestamp
+			case "severity":
+				targets[i] = &severity
+			case "severity_number":
+				targets[i] = &r.SeverityNumber
+			case "service_name":
+				targets[i] = &serviceName
+			case "trace_id":
+				targets[i] = &traceId
+			case "span_id":
+				targets[i] = &spanId
+			case "body":
+				targets[i] = &body
+			case "attributes_json":
+				targets[i] = &attrs
+			default:
+				return nil, fmt.Errorf("scan: unsupported field %q", f)
+			}
+		}
+
+		if err := rows.Scan(targets...); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 		r.Severity = severity.String
