@@ -4,7 +4,7 @@
 //
 // Usage:
 //
-//	mockdb [-out demo/logs.db] [-rows 3000] [-seed 42] [-no-fts]
+//	mockdb [-out demo/logs.db] [-rows 3000] [-seed 42] [-fts]
 //
 // The output database uses the exact production schema (log_resource +
 // log_event + logs view) and, by default, includes a contentless logs_fts
@@ -31,22 +31,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// severity is an OTel severity level with a sampling weight.
-type severity struct {
-	text   string
-	number int64
-	weight int
-}
-
-// severities approximates a realistic log distribution (INFO commonest,
-// FATAL rare). The text→number pairs come from the shared severity model so
-// they stay in sync with the UI's severity filter.
-var severities = []severity{
-	{"DEBUG", sev.Number("DEBUG"), 8},
-	{"INFO", sev.Number("INFO"), 62},
-	{"WARN", sev.Number("WARN"), 18},
-	{"ERROR", sev.Number("ERROR"), 10},
-	{"FATAL", sev.Number("FATAL"), 2},
+// severityWeights biases the shared severity model towards a realistic log
+// distribution (INFO commonest, FATAL rare). Text and number pairs come from
+// severity.All so they stay in sync with the UI's severity filter.
+var severityWeights = map[string]int{
+	"DEBUG": 8,
+	"INFO":  62,
+	"WARN":  18,
+	"ERROR": 10,
+	"FATAL": 2,
 }
 
 // attr is a single attribute emitted on a log event.
@@ -266,12 +259,12 @@ func (g *generator) attrValue(a attr, svc *service) any {
 	}
 }
 
-func (g *generator) eventAttrs(sev string, svc *service) string {
+func (g *generator) eventAttrs(level string, svc *service) string {
 	attrs := make(map[string]any, len(svc.attrs)+1)
 	for _, a := range svc.attrs {
 		attrs[a.key] = g.attrValue(a, svc)
 	}
-	if sev == "ERROR" || sev == "FATAL" {
+	if level == "ERROR" || level == "FATAL" {
 		attrs["error.code"] = fmt.Sprintf("E%d", g.rng.IntN(9999))
 	}
 	b, err := json.Marshal(attrs)
@@ -326,9 +319,13 @@ func main() {
 	}
 
 	// Remove any existing database (and its WAL/shm sidecars) so the tool is
-	// safe to re-run for a fresh dataset.
+	// safe to re-run for a fresh dataset. Fail loudly if a stale database is
+	// still open elsewhere (e.g. a running server), since recreating the schema
+	// over it is impossible.
 	for _, suffix := range []string{"", "-wal", "-shm"} {
-		_ = os.Remove(*out + suffix)
+		if err := os.Remove(*out + suffix); err != nil && !os.IsNotExist(err) {
+			log.Fatalf("remove existing database %s: %v (close it in any running process first)", *out+suffix, err)
+		}
 	}
 
 	conn, err := sql.Open("sqlite", *out)
@@ -394,7 +391,7 @@ func main() {
 		svcIdx := weightedPick(rng, weights, total)
 		svc := &services[svcIdx]
 
-		sev := weightedSeverity(rng)
+		lvl := weightedSeverity(rng)
 		// Bias timestamps toward the most recent hour: 60% of events land in
 		// the last hour, the rest are spread across the last 24h.
 		var age time.Duration
@@ -408,11 +405,11 @@ func main() {
 		body := gen.body(svc)
 		traceID := gen.traceID()
 		spanID := gen.newSpanID()
-		attrs := gen.eventAttrs(sev.text, svc)
+		attrs := gen.eventAttrs(lvl.Text, svc)
 
 		if _, err = stmt.ExecContext(
 			ctx, ts, ts, resIDs[svcIdx],
-			sev.number, sev.text, traceID, spanID, body, attrs,
+			lvl.Number, lvl.Text, traceID, spanID, body, attrs,
 		); err != nil {
 			log.Fatalf("insert event %d: %v", i, err)
 		}
@@ -441,19 +438,19 @@ func main() {
 }
 
 // weightedSeverity picks a severity level according to its sampling weight.
-func weightedSeverity(rng *rand.Rand) severity {
+func weightedSeverity(rng *rand.Rand) sev.Level {
 	total := 0
-	for _, s := range severities {
-		total += s.weight
+	for _, l := range sev.All {
+		total += severityWeights[l.Text]
 	}
 	n := rng.IntN(total)
-	for _, s := range severities {
-		n -= s.weight
+	for _, l := range sev.All {
+		n -= severityWeights[l.Text]
 		if n < 0 {
-			return s
+			return l
 		}
 	}
-	return severities[0]
+	return sev.All[0]
 }
 
 // weightedPick returns an index into items sampled proportionally to weights.
