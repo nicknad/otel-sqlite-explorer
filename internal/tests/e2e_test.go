@@ -292,18 +292,57 @@ func TestE2E_DetailPageInvalidID(t *testing.T) {
 	h := newE2EHarness(t, false)
 	resp := h.get(t, "/logs/99999")
 	assertStatus(t, resp, 404)
+	body := readBody(t, resp)
+	for _, s := range []string{"Not Found", "Back to logs"} {
+		if !strings.Contains(body, s) {
+			t.Errorf("error page missing %q", s)
+		}
+	}
 }
 
 func TestE2E_DetailPageNegativeID(t *testing.T) {
 	h := newE2EHarness(t, false)
 	resp := h.get(t, "/logs/-1")
 	assertStatus(t, resp, 400)
+	body := readBody(t, resp)
+	for _, s := range []string{"Bad Request", "positive integer"} {
+		if !strings.Contains(body, s) {
+			t.Errorf("error page missing %q", s)
+		}
+	}
 }
 
 func TestE2E_DetailPageNonNumericID(t *testing.T) {
 	h := newE2EHarness(t, false)
 	resp := h.get(t, "/logs/abc")
 	assertStatus(t, resp, 400)
+	assertBodyContains(t, resp, "Bad Request")
+}
+
+// ==========================================================================
+// Error page
+// ==========================================================================
+
+func TestE2E_UnknownRouteReturnsStyled404(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/nope")
+	assertStatus(t, resp, 404)
+	body := readBody(t, resp)
+	for _, s := range []string{"Not Found", "Back to logs", "style.css"} {
+		if !strings.Contains(body, s) {
+			t.Errorf("error page missing %q", s)
+		}
+	}
+}
+
+func TestE2E_StaticStylesheetServed(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/static/style.css")
+	assertStatus(t, resp, 200)
+	body := readBody(t, resp)
+	if !strings.Contains(body, "body {") || !strings.Contains(body, "error-card") {
+		t.Errorf("stylesheet missing expected rules")
+	}
 }
 
 // ==========================================================================

@@ -70,6 +70,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /logs/query", s.handleQuery)
 	// Global stylesheet shared by every page.
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(ui.Static))))
+	// Everything else: styled 404 page.
+	mux.HandleFunc("GET /{path...}", func(w http.ResponseWriter, _ *http.Request) {
+		s.renderError(w, http.StatusNotFound, "That page does not exist.")
+	})
 }
 
 // ============================================================================
@@ -104,7 +108,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	pd := pageDataFromForm(r)
 	if err := s.runQuery(&pd); err != nil {
 		log.Printf("logs page query error: %v", err)
-		http.Error(w, "Internal error", http.StatusInternalServerError)
+		s.renderError(w, http.StatusInternalServerError, "Internal error")
 		return
 	}
 	s.renderLogsPage(w, &pd)
@@ -157,6 +161,20 @@ func (s *Server) renderLogsPage(w http.ResponseWriter, pd *pageData) {
 	}
 }
 
+// renderError writes a styled error page with the given status and message.
+// Used for browser-facing GET failures (unknown routes, bad/unknown log ids,
+// internal query errors) so users get a consistent, navigable page.
+func (s *Server) renderError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := s.tmpls.ExecuteTemplate(w, "error.html", map[string]any{
+		"Status":  http.StatusText(status),
+		"Message": message,
+	}); err != nil {
+		log.Printf("template error: %v", err)
+	}
+}
+
 // ============================================================================
 // GET /logs/{id}  —  render the full payload of a single log entry
 // ============================================================================
@@ -165,7 +183,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		s.renderError(w, http.StatusBadRequest, "The log id must be a positive integer.")
 		return
 	}
 
@@ -173,11 +191,11 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Execute(cq)
 	if err != nil {
 		log.Printf("detail query error: %v", err)
-		http.Error(w, "Internal error", http.StatusInternalServerError)
+		s.renderError(w, http.StatusInternalServerError, "Internal error")
 		return
 	}
 	if len(rows) == 0 {
-		http.Error(w, "log not found", http.StatusNotFound)
+		s.renderError(w, http.StatusNotFound, "No log entry found with that id.")
 		return
 	}
 

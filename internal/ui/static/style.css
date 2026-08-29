@@ -204,3 +204,14 @@ pre {
   word-break: break-word;
   font-size: 0.8125rem;
 }
+.error-card {
+  max-width: 36rem;
+}
+.error-card h1 {
+  font-size: 3rem;
+  margin-bottom: 0.5rem;
+}
+.error-card p {
+  color: #8b949e;
+  font-size: 0.9375rem;
+}
