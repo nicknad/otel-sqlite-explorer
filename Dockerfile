@@ -9,7 +9,7 @@
 # file ownership on the shared volume.
 # ------------------------------------------------------------
 
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.27-trixie AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -25,7 +25,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Runtime image
 # ------------------------------------------------------------
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 ARG REVISION="unknown"
 

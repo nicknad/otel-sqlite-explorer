@@ -29,7 +29,7 @@ pre-commit:
       glob: "*.go"
 
     check-newlines:
-      run: test -z "$(git diff --cached --name-only --diff-filter=ACM | xargs -I {} sh -c 'tail -c1 {} | read -r _ || echo {}' 2>/dev/null | head -20)"
+      run: git diff --cached --name-only --diff-filter=ACM | xargs -I {} sh -c 'tail -c1 {} | read -r _ || echo {}' 2>/dev/null | head -20 | grep -q . && exit 1 || exit 0
       skip:
         - merge
         - rebase
