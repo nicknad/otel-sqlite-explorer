@@ -57,6 +57,10 @@ func NewServer(database *db.Client) (*Server, error) {
 	return &Server{db: database, tmpls: tmpl}, nil
 }
 
+// maxQueryBodyBytes caps JSON query request bodies so a single huge payload
+// cannot exhaust server memory.
+const maxQueryBodyBytes = 1 << 20 // 1 MiB
+
 // ============================================================================
 // Routes
 // ============================================================================
@@ -68,11 +72,29 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /logs", s.handleLogs)
 	mux.HandleFunc("GET /logs/{id}", s.handleDetail)
 	mux.HandleFunc("POST /logs/query", s.handleQuery)
-	// Global stylesheet shared by every page.
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(ui.Static))))
+	// Liveness probe for orchestrators; pings the database without running
+	// a real log query.
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// Global stylesheet shared by every page, cacheable for an hour.
+	static := http.FileServer(http.FS(ui.Static))
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		static.ServeHTTP(w, r)
+	})))
 	// Everything else: styled 404 page.
 	mux.HandleFunc("GET /{path...}", func(w http.ResponseWriter, _ *http.Request) {
 		s.renderError(w, http.StatusNotFound, "That page does not exist.")
+	})
+}
+
+// Handler wraps mux with baseline security headers. The server entrypoint
+// uses it; tests may serve the mux directly.
+func (s *Server) Handler(mux http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		mux.ServeHTTP(w, r)
 	})
 }
 
@@ -107,11 +129,26 @@ type pageData struct {
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	pd := pageDataFromForm(r)
 	if err := s.runQuery(&pd); err != nil {
+		// User-supplied filter problems (bad severity, date, limit, …) are
+		// the client's fault; anything else is a server-side failure.
+		// The message is template-escaped on render, so echoing the input
+		// back is XSS-safe.
+		if isValidationError(err) {
+			s.renderError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		log.Printf("logs page query error: %v", err)
 		s.renderError(w, http.StatusInternalServerError, "Internal error")
 		return
 	}
 	s.renderLogsPage(w, &pd)
+}
+
+// isValidationError reports whether err stems from user input rather than a
+// server-side failure. runQuery prefixes all input problems with
+// "validation: ".
+func isValidationError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "validation: ")
 }
 
 // ============================================================================
@@ -124,6 +161,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxQueryBodyBytes)
 	var q dsl.Query
 	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
@@ -222,10 +260,14 @@ func (s *Server) runQuery(pd *pageData) error {
 		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpContains, Field: "service_name", Value: dsl.Value{Type: dsl.ValueString, String: pd.Service}})
 	}
 	if pd.Severity != "" {
+		n := severity.Number(pd.Severity)
+		if n == 0 {
+			return fmt.Errorf("validation: unknown severity %q (expected DEBUG, INFO, WARN, ERROR, or FATAL)", pd.Severity)
+		}
 		exprs = append(exprs, dsl.BinaryExpr{
 			Op:    dsl.OpGte,
 			Field: "severity_number",
-			Value: dsl.Value{Type: dsl.ValueInt, Int: severity.Number(pd.Severity)},
+			Value: dsl.Value{Type: dsl.ValueInt, Int: n},
 		})
 	}
 	if pd.TraceID != "" {
@@ -238,19 +280,22 @@ func (s *Server) runQuery(pd *pageData) error {
 		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpContains, Field: "body", Value: dsl.Value{Type: dsl.ValueString, String: pd.Body}})
 	}
 	// Date range filters — convert to timestamp nanoseconds for DSL.
+	// A date-only From starts at the beginning of that day; a date-only To
+	// covers through the end of that day. Unparseable input is a client
+	// error, not a silent no-op.
 	if pd.DateFrom != "" {
-		ts, err := parseDateTime(pd.DateFrom)
-		if err == nil {
-			exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpGte, Field: "timestamp", Value: dsl.Value{Type: dsl.ValueInt, Int: ts}})
+		ts, err := parseDateTime(pd.DateFrom, false)
+		if err != nil {
+			return fmt.Errorf("validation: invalid date_from: %w", err)
 		}
+		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpGte, Field: "timestamp", Value: dsl.Value{Type: dsl.ValueInt, Int: ts}})
 	}
 	if pd.DateTo != "" {
-		ts, err := parseDateTime(pd.DateTo)
-		if err == nil {
-			// End of the given day (add 24h) when only a date was entered;
-			// parseDateTime already handles this by appending 23:59:59.
-			exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpLte, Field: "timestamp", Value: dsl.Value{Type: dsl.ValueInt, Int: ts}})
+		ts, err := parseDateTime(pd.DateTo, true)
+		if err != nil {
+			return fmt.Errorf("validation: invalid date_to: %w", err)
 		}
+		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpLte, Field: "timestamp", Value: dsl.Value{Type: dsl.ValueInt, Int: ts}})
 	}
 	if pd.Search != "" {
 		exprs = append(exprs, dsl.MatchExpr{Query: pd.Search})
@@ -300,26 +345,45 @@ func (s *Server) runQuery(pd *pageData) error {
 // fallback (when the backing DB has no logs_fts index), normalization,
 // compilation, and execution. Both the fallback rewrite and Normalize are
 // idempotent, so calling it on an already-normalized query is safe.
+//
+// Execution failures are logged with their SQL and arguments server-side;
+// the returned error carries only the database message so handlers can
+// safely surface it without leaking internals.
 func (s *Server) executeQuery(q *dsl.Query) ([]db.LogRow, error) {
 	s.rewriteMatchToContains(q)
 	dsl.Normalize(q)
 	cq, err := compiler.Compile(q)
 	if err != nil {
-		return nil, fmt.Errorf("compile: %w", err)
+		return nil, fmt.Errorf("validation: %w", err)
 	}
 	rows, err := s.db.Execute(cq)
 	if err != nil {
+		log.Printf("query execute error: %v | SQL: %s | args: %v", err, cq.SQL, cq.Args)
 		return nil, fmt.Errorf("execute: %w", err)
 	}
 	return rows, nil
 }
 
 // ============================================================================
+// GET /healthz  —  liveness probe (no log query)
+// ============================================================================
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	if err := s.db.Ping(); err != nil {
+		log.Printf("health check failed: %v", err)
+		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// ============================================================================
 // Form → pageData conversion
 // ============================================================================
 
-// pageDataFromForm builds pageData from an HTTP POST form, preserving all
-// filter values so they can be re-rendered in the form.
+// pageDataFromForm builds pageData from an HTTP GET query string, preserving
+// all filter values so they can be re-rendered in the form.
 func pageDataFromForm(r *http.Request) pageData {
 	_ = r.ParseForm()
 	pd := pageData{
@@ -350,25 +414,37 @@ func pageDataFromForm(r *http.Request) pageData {
 
 // parseDateTime parses a date or datetime string from the HTML form and returns
 // the corresponding epoch nanoseconds (UTC). Supported formats:
-//   - "2006-01-02T15:04"   (datetime-local, local time, stored as UTC)
-//   - "2006-01-02"         (date only, treated as end-of-day 23:59:59)
-//   - RFC3339 / RFC3339Nano (e.g. "2024-01-15T14:30:00Z")
-func parseDateTime(s string) (int64, error) {
-	// Try RFC3339 first (with or without TZ).
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04"} {
-		t, err := time.Parse(layout, s)
-		if err == nil {
+//
+//   - "2006-01-02T15:04"   (datetime-local, interpreted in the server's local
+//     time zone, since browsers submit it without an offset)
+//   - "2006-01-02T15:04:05" (same, with seconds)
+//   - "2006-01-02"         (date only: start of day, or end of day when
+//     endOfDay is true for an inclusive upper bound)
+//   - RFC3339 / RFC3339Nano (e.g. "2024-01-15T14:30:00Z", offset honored)
+func parseDateTime(s string, endOfDay bool) (int64, error) {
+	// datetime-local carries no offset; interpret it in local time.
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02T15:04"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
 			return t.UTC().UnixNano(), nil
 		}
 	}
-	// Date only — treat as end of that day (23:59:59 UTC).
-	t, err := time.Parse("2006-01-02", s)
-	if err == nil {
-		// End of day: 23:59:59.999999999 UTC
-		endOfDay := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
-		return endOfDay.UnixNano(), nil
+	// RFC3339 timestamps carry their own offset.
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().UnixNano(), nil
+		}
 	}
-	return 0, fmt.Errorf("cannot parse date: %q", s)
+	// Date only — start or end of that day (UTC).
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse date: %q", s)
+	}
+	if endOfDay {
+		// End of day: 23:59:59.999999999 UTC
+		end := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
+		return end.UnixNano(), nil
+	}
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).UnixNano(), nil
 }
 
 // andExprs combines a slice of expressions into a single AND tree.

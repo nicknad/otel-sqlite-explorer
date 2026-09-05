@@ -40,6 +40,7 @@
     <label> Severity
       <select name="severity">
         <option value="">Any</option>
+        <option value="FATAL" {{if eq .Severity "FATAL" }}selected{{end}}>FATAL</option>
         <option value="ERROR" {{if eq .Severity "ERROR" }}selected{{end}}>ERROR</option>
         <option value="WARN" {{if eq .Severity "WARN" }}selected{{end}}>WARN</option>
         <option value="INFO" {{if eq .Severity "INFO" }}selected{{end}}>INFO</option>

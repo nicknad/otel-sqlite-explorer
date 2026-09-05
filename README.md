@@ -24,7 +24,7 @@ database that exposes a `logs` view/table with the columns below.
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.27+
 - A SQLite database with a `logs` view/table exposing these columns:
 
   | Column        | Type    | Description                          |
@@ -57,6 +57,15 @@ database that exposes a `logs` view/table with the columns below.
   JOIN log_resource lr ON le.resource_id = lr.id;
   ```
 
+  For large databases, index the hot paths (the view JOIN plus the
+  timestamp / severity filters and default sort):
+
+  ```sql
+  CREATE INDEX idx_log_event_resource ON log_event(resource_id);
+  CREATE INDEX idx_log_event_ts ON log_event(timestamp_ns);
+  CREATE INDEX idx_log_event_sev ON log_event(severity_number);
+  ```
+
 
 ### Build & Run
 
@@ -83,10 +92,16 @@ The index itself is created and kept current by the write sidecar
 
 ### Flags
 
-| Flag    | Default | Description                       |
-|---------|---------|-----------------------------------|
-| `-db`   | —       | Path to SQLite database (required)|
-| `-addr` | `:8080` | HTTP listen address               |
+| Flag       | Default | Description                        |
+|------------|---------|------------------------------------|
+| `-db`      | —       | Path to SQLite database (required) |
+| `-addr`    | `:8080` | HTTP listen address                |
+| `-version` | —       | Print version and exit             |
+
+`GET /healthz` returns `{"status":"ok"}` (503 when the database is
+unreachable) for container / load-balancer probes. The service has no
+authentication: bind it to localhost or put it behind an authenticated
+reverse proxy, and terminate TLS at the proxy when crossing networks.
 
 ## Usage
 
@@ -99,11 +114,25 @@ The index itself is created and kept current by the write sidecar
    attributes.
 
 Filters live in the URL query string, so reloading the page keeps them.
+Notes on filter semantics:
+
+- **Severity** means "this level and above" (`ERROR` also matches `FATAL`).
+- **Trace / span id** are hex strings matched case-insensitively.
+- **Body / service** are literal substring matches (`%` and `_` are not
+  wildcards).
+- **From** with a bare date starts at the beginning of that day;
+  **To** with a bare date covers through the end of that day.
+  `datetime-local` values are interpreted in the server's time zone.
+- Invalid filter values (unknown severity, unparseable date or `since`)
+  return `400` with an explanation instead of silently querying.
 
 ### JSON API
 
-`POST /logs/query` with `Content-Type: application/json` and
-`Accept: application/json`:
+`POST /logs/query` requires `Content-Type: application/json` (request bodies
+are capped at 1 MiB). With `Accept: application/json` it returns JSON rows;
+without it, it returns an HTML `<tr>` partial for HTMX-style embedding.
+Unknown top-level fields are rejected so typos fail loudly. An empty result
+set encodes as `[]`.
 
 ```bash
 curl -X POST http://localhost:8080/logs/query \
@@ -143,7 +172,9 @@ Response:
 The `where` clause supports a shorthand JSON format. Each node is a single-key
 object whose key is the operator.
 
-**Comparison operators** — `{"op": ["field", "value"]}`:
+**Comparison operators** — `{"op": ["field", value]}`. The value may be a
+JSON string, number, or boolean (`{"eq": ["severity_number", 17]}`); numeric
+strings stay strings for `contains` (`{"contains": ["body", "404"]}`):
 
 | Op        | Meaning                          |
 |-----------|----------------------------------|
@@ -166,13 +197,15 @@ object whose key is the operator.
 {"between": ["timestamp", 1700000000000000000, 1700000099000000000]}
 ```
 
-**`in`** — `{"in": ["field", [v1, v2, ...]]}`:
+**`in`** — `{"in": ["field", [v1, v2, …]]}` (at most 100 values, all of one
+type):
 
 ```json
 {"in": ["service_name", ["api-gateway", "auth-svc"]]}
 ```
 
-**Logical combinators** — `{"and": [expr, expr]}` / `{"or": [expr, expr]}`:
+**Logical combinators** — `{"and": [expr, expr, …]}` / `{"or": [expr, …]}`
+accept two or more sub-expressions:
 
 ```json
 {
@@ -214,14 +247,14 @@ A hybrid query combining full-text and structured filters:
 
 **Top-level fields:**
 
-| Field    | Type     | Description                                  |
-|----------|----------|----------------------------------------------|
-| `select` | string   | `*` (default) or comma-separated field list  |
-| `where`  | expr     | Filter tree (see above)                      |
-| `since`  | string   | Duration window, e.g. `"1h"`, `"24h"`, `"7d"`|
-| `sort`   | []Sort   | `[{field, desc}]`; defaults to timestamp DESC|
-| `limit`  | int      | 1–1000, default 100                          |
-| `offset` | int      | Pagination offset, default 0                 |
+| Field    | Type     | Description                                               |
+|----------|----------|-----------------------------------------------------------|
+| `select` | string   | `*` (default) or comma-separated field list               |
+| `where`  | expr     | Filter tree (see above)                                   |
+| `since`  | string   | Duration window: `"1h"`, `"24h"`, `"7d"`, `"1w"` (positive, `d` = days, `w` = weeks) |
+| `sort`   | []Sort   | `[{field, desc}]`; defaults to timestamp DESC             |
+| `limit`  | int      | 1–1000, default 100                                       |
+| `offset` | int      | Pagination offset, default 0                              |
 
 **Allowed fields:** `id`, `timestamp`, `severity`, `severity_number`,
 `service_name`, `trace_id`, `span_id`, `body`, `attributes_json`.

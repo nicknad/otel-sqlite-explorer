@@ -1,9 +1,40 @@
 package dsl
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// ParseSince parses a `since` duration window. In addition to every unit
+// accepted by time.ParseDuration (e.g. "24h", "90m"), it accepts whole-day
+// ("7d") and whole-week ("1w") shorthands documented in the README.
+// Non-positive durations are rejected.
+func ParseSince(s string) (time.Duration, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		if d <= 0 {
+			return 0, fmt.Errorf("duration must be positive, got %q", s)
+		}
+		return d, nil
+	}
+	if len(s) < 2 {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	unit := s[len(s)-1]
+	if unit != 'd' && unit != 'w' {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	n, err := strconv.Atoi(s[:len(s)-1])
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	d := time.Duration(n) * 24 * time.Hour
+	if unit == 'w' {
+		d *= 7
+	}
+	return d, nil
+}
 
 // Normalize applies defaults and transforms to a Query before compilation.
 // It modifies q in place.
@@ -25,9 +56,10 @@ func Normalize(q *Query) {
 	}
 
 	// --- Since duration → timestamp expression ---
+	// Validate guarantees q.Since parses; a parse failure here is ignored
+	// defensively so Normalize never drops the rest of the query.
 	if q.Since != "" {
-		d, err := time.ParseDuration(q.Since)
-		if err == nil {
+		if d, err := ParseSince(q.Since); err == nil {
 			threshold := time.Now().Add(-d).UnixNano()
 			tsExpr := BinaryExpr{
 				Op:    OpGte,

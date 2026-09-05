@@ -10,6 +10,9 @@ const (
 	MaxLimit     = 1000
 	MaxExprDepth = 10
 	DefaultLimit = 100
+	// MaxInValues bounds IN lists so a single query cannot exceed SQLite's
+	// variable limit or blow up planning time.
+	MaxInValues = 100
 )
 
 // Validate checks a Query against all business rules.
@@ -42,6 +45,13 @@ func Validate(q *Query) error {
 		d := exprDepth(q.Where)
 		if d > MaxExprDepth {
 			return fmt.Errorf("expression depth %d exceeds maximum of %d", d, MaxExprDepth)
+		}
+	}
+
+	// --- Since ---
+	if strings.TrimSpace(q.Since) != "" {
+		if _, err := ParseSince(strings.TrimSpace(q.Since)); err != nil {
+			return fmt.Errorf("since: %w", err)
 		}
 	}
 
@@ -126,6 +136,10 @@ func exprDepth(e Expr) int {
 
 func validateValue(op Op, v *Value) error {
 	switch op {
+	case OpContains:
+		if v.Type != ValueString {
+			return fmt.Errorf("contains requires a string value, got %s", v.Type)
+		}
 	case OpBetween:
 		if v.Min == nil || v.Max == nil {
 			return errors.New("between requires min and max")
@@ -137,10 +151,17 @@ func validateValue(op Op, v *Value) error {
 		if len(v.List) == 0 {
 			return errors.New("in requires at least one value")
 		}
+		if len(v.List) > MaxInValues {
+			return fmt.Errorf("in requires at most %d values, got %d", MaxInValues, len(v.List))
+		}
 		// all list elements must have the same type
+		first := v.List[0].Type
 		for i, item := range v.List {
 			if item.Type == "" {
 				return fmt.Errorf("in[%d]: value type is empty", i)
+			}
+			if item.Type != first {
+				return fmt.Errorf("in[%d]: type mismatch: %s vs %s", i, item.Type, first)
 			}
 		}
 	default:

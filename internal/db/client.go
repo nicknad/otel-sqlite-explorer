@@ -83,3 +83,18 @@ func (c *Client) Close() error {
 func (c *Client) HasFTS() bool {
 	return c.hasFTS
 }
+
+// Ping verifies the database answers within a short deadline. It backs the
+// /healthz endpoint so orchestrators can probe liveness without running a
+// real log query.
+func (c *Client) Ping() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.db.QueryRowContext(ctx, "SELECT 1").Err(); err != nil {
+		return fmt.Errorf("ping: %w", err)
+	}
+	return nil
+}

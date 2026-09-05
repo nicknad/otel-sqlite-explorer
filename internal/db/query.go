@@ -24,6 +24,10 @@ type LogRow struct {
 // Execute compiles a query, runs it against the database, and returns matching rows.
 // Each query is bounded by the client's timeout so a hung operation cannot
 // block the HTTP handler forever.
+//
+// Errors carry only the database message, never the SQL text or bound
+// arguments: the API layer logs those server-side and returns this error to
+// the client, so echoing them here would leak internals.
 func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -39,7 +43,7 @@ func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 
 	rows, err := c.db.QueryContext(ctx, cq.SQL, cq.Args...)
 	if err != nil {
-		return nil, fmt.Errorf("query: %w\nSQL: %s\nArgs: %v", err, cq.SQL, cq.Args)
+		return nil, fmt.Errorf("query: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -48,7 +52,8 @@ func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 		fields = compiler.DefaultFields
 	}
 
-	var results []LogRow
+	// Non-nil so empty result sets encode as [] rather than null in JSON.
+	results := make([]LogRow, 0)
 	for rows.Next() {
 		var r LogRow
 		// text columns are nullable

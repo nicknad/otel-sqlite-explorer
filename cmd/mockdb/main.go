@@ -274,20 +274,66 @@ func (g *generator) eventAttrs(level string, svc *service) string {
 	return string(b)
 }
 
-// body fills the placeholders of a randomly chosen body template with
-// domain-appropriate values.
+// body fills every placeholder of a randomly chosen body template.
+// %d verbs get random numbers; %s verbs get domain-appropriate values (SKU
+// ids for stock templates, charge ids for payment templates, upstream
+// service names otherwise) so generated bodies read realistically.
 func (g *generator) body(svc *service) string {
 	tpl := g.pick(svc.bodies)
-	switch {
-	case strings.Contains(tpl, "%s") && strings.Contains(tpl, "%d"):
-		return fmt.Sprintf(tpl, g.pick(upstreams), g.rng.IntN(100_000))
-	case strings.Contains(tpl, "%s"):
-		return fmt.Sprintf(tpl, g.pick(upstreams))
-	case strings.Contains(tpl, "%d"):
-		return fmt.Sprintf(tpl, g.rng.IntN(100_000))
-	default:
-		return tpl
+	var sb strings.Builder
+	for i := 0; i < len(tpl); {
+		if tpl[i] == '%' && i+1 < len(tpl) && (tpl[i+1] == 's' || tpl[i+1] == 'd') {
+			if tpl[i+1] == 's' {
+				sb.WriteString(g.stringSub(tpl, svc))
+			} else {
+				fmt.Fprintf(&sb, "%d", g.rng.IntN(100_000))
+			}
+			i += 2
+			continue
+		}
+		sb.WriteByte(tpl[i])
+		i++
 	}
+	return sb.String()
+}
+
+// stringSub picks a %s substitution fitting the template's domain.
+func (g *generator) stringSub(tpl string, svc *service) string {
+	lower := strings.ToLower(tpl)
+	switch {
+	case strings.Contains(lower, "sku"):
+		if v := g.pickWithPrefix(svc.strs, "SKU-"); v != "" {
+			return v
+		}
+		// Cross-service templates (e.g. checkout-svc's reservation failure)
+		// mention SKUs without stocking them; borrow from any pool that has
+		// them rather than dropping in a service name.
+		for i := range services {
+			if v := g.pickWithPrefix(services[i].strs, "SKU-"); v != "" {
+				return v
+			}
+		}
+	case strings.Contains(lower, "charge"):
+		if v := g.pickWithPrefix(svc.strs, "ch_"); v != "" {
+			return v
+		}
+	}
+	return g.pick(upstreams)
+}
+
+// pickWithPrefix returns a random entry with the given prefix, or "" when
+// the pool holds none.
+func (g *generator) pickWithPrefix(pool []string, prefix string) string {
+	var matches []string
+	for _, s := range pool {
+		if strings.HasPrefix(s, prefix) {
+			matches = append(matches, s)
+		}
+	}
+	if len(matches) == 0 {
+		return ""
+	}
+	return g.pick(matches)
 }
 
 // upstreams are the service names substituted into %s body placeholders.

@@ -39,8 +39,9 @@ func TestCompilerDeterminism(t *testing.T) {
 
 	// Expected: normalized adds default ORDER BY timestamp_ns DESC.
 	// Logical expressions are wrapped in parentheses by the compiler.
+	// LIKE patterns escape metacharacters with ESCAPE '\'.
 	expectedSQL := "SELECT id, timestamp_ns, severity_text, severity_number, service_name, lower(hex(trace_id)), lower(hex(span_id)), body, attributes_json " +
-		"FROM logs WHERE (service_name = ? AND body LIKE ?) " +
+		"FROM logs WHERE (service_name = ? AND body LIKE ? ESCAPE '\\') " +
 		"ORDER BY timestamp_ns DESC LIMIT ? OFFSET ?"
 	expectedArgs := []any{"api", "%timeout%", 100, 0}
 
@@ -256,5 +257,67 @@ func TestCompilerInjectionAttemptIsParameterized(t *testing.T) {
 	}
 	if len(cq.Args) != 3 || cq.Args[0] != "' OR '1'='1" {
 		t.Errorf("expected injection string as first bound arg, got %v", cq.Args)
+	}
+}
+
+func TestCompilerContainsEscapesWildcards(t *testing.T) {
+	input := `{"where": {"contains": ["body", "100%_ok\\done"]}, "limit": 10}`
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(input), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	dsl.Normalize(&q)
+
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(cq.SQL, "LIKE ? ESCAPE '\\'") {
+		t.Errorf("expected ESCAPE clause, got: %s", cq.SQL)
+	}
+	want := `%100\%\_ok\\done%`
+	if len(cq.Args) == 0 || cq.Args[0] != want {
+		t.Errorf("expected escaped pattern %q, got %v", want, cq.Args)
+	}
+}
+
+func TestCompilerBlobFilterIsCaseInsensitive(t *testing.T) {
+	// Uppercase hex trace ids must match the lower(hex(...)) expression.
+	input := `{"where": {"eq": ["trace_id", "00112233445566778899AABBCCDDEEFF"]}, "limit": 10}`
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(input), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	dsl.Normalize(&q)
+
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(cq.Args) == 0 || cq.Args[0] != "00112233445566778899aabbccddeeff" {
+		t.Errorf("expected lowercased hex arg, got %v", cq.Args)
+	}
+}
+
+func TestCompilerDefaultsWithoutNormalize(t *testing.T) {
+	// Callers that bypass Normalize still get a deterministic ORDER BY and
+	// sane LIMIT/OFFSET so pagination never silently returns nothing.
+	q := dsl.Query{Select: "*"}
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(cq.SQL, "ORDER BY timestamp_ns DESC") {
+		t.Errorf("expected default timestamp ordering, got: %s", cq.SQL)
+	}
+	wantArgs := []any{dsl.DefaultLimit, 0}
+	if !reflect.DeepEqual(cq.Args, wantArgs) {
+		t.Errorf("expected default limit/offset %v, got %v", wantArgs, cq.Args)
 	}
 }

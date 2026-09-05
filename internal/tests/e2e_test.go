@@ -56,7 +56,9 @@ func newE2EHarness(t *testing.T, withFTS bool) *e2eHarness {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	ts := httptest.NewServer(mux)
+	// Serve through the production middleware stack (security headers), not
+	// the bare mux, so tests observe what clients observe.
+	ts := httptest.NewServer(srv.Handler(mux))
 	t.Cleanup(func() {
 		ts.Close()
 		_ = client.Close()
@@ -74,6 +76,19 @@ func (h *e2eHarness) get(t *testing.T, pathAndQuery string) *http.Response {
 		t.Fatalf("GET %s: %v", pathAndQuery, err)
 	}
 	return resp
+}
+
+// getStatus performs a GET request and returns the status code without
+// touching testing.T, so it is safe to call from worker goroutines (FailNow
+// must only run on the test goroutine).
+func (h *e2eHarness) getStatus(pathAndQuery string) (int, error) {
+	resp, err := h.server.Client().Get(h.server.URL + pathAndQuery)
+	if err != nil {
+		return 0, err
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp.StatusCode, nil
 }
 
 // postJSON performs a JSON POST request.
@@ -615,30 +630,22 @@ func TestE2E_ConcurrentRequests(t *testing.T) {
 	errs := make(chan error, concurrency)
 	for i := range concurrency {
 		go func(id int) {
-			for range iterations {
-				resp := h.get(t, "/logs?since=87600h&limit=10")
-				if resp.StatusCode != http.StatusOK {
-					errs <- fmt.Errorf("g%d: GET /logs returned %d", id, resp.StatusCode)
-					return
+			for _, path := range []string{
+				"/logs?since=87600h&limit=10",
+				"/logs/1",
+				"/logs?service_name=api-gateway",
+			} {
+				for range iterations {
+					status, err := h.getStatus(path)
+					if err != nil {
+						errs <- fmt.Errorf("g%d: GET %s: %w", id, path, err)
+						return
+					}
+					if status != http.StatusOK {
+						errs <- fmt.Errorf("g%d: GET %s returned %d", id, path, status)
+						return
+					}
 				}
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-
-				resp = h.get(t, "/logs/1")
-				if resp.StatusCode != http.StatusOK {
-					errs <- fmt.Errorf("g%d: GET /logs/1 returned %d", id, resp.StatusCode)
-					return
-				}
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-
-				resp = h.get(t, "/logs?service_name=api-gateway")
-				if resp.StatusCode != http.StatusOK {
-					errs <- fmt.Errorf("g%d: GET /logs returned %d", id, resp.StatusCode)
-					return
-				}
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
 			}
 			errs <- nil
 		}(i)
@@ -733,4 +740,117 @@ func fileHash(t *testing.T, path string) string {
 	}
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+// ==========================================================================
+// Hardening regressions
+// ==========================================================================
+
+func TestE2E_Healthz(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/healthz")
+	assertStatus(t, resp, 200)
+	body := readBody(t, resp)
+	if !strings.Contains(body, `"status":"ok"`) {
+		t.Errorf("unexpected health body: %q", body)
+	}
+}
+
+func TestE2E_SecurityHeaders(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs?since=87600h")
+	assertStatus(t, resp, 200)
+	_ = readBody(t, resp)
+	for k, want := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "SAMEORIGIN",
+		"Referrer-Policy":        "no-referrer",
+	} {
+		if got := resp.Header.Get(k); got != want {
+			t.Errorf("header %s: got %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestE2E_TraceIDUppercase(t *testing.T) {
+	h := newE2EHarness(t, false)
+	// Uppercase hex must match the lower(hex(...)) expression.
+	resp := h.get(t, "/logs?since=87600h&trace_id=00112233445566778899AABBCCDDEEFF")
+	assertStatus(t, resp, 200)
+	body := readBody(t, resp)
+	if !strings.Contains(body, "connection timeout") {
+		t.Error("uppercase trace_id filter matched nothing")
+	}
+}
+
+func TestE2E_UnknownSeverityIsBadRequest(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs?since=87600h&severity=BOGUS")
+	assertStatus(t, resp, 400)
+	assertBodyContains(t, resp, "unknown severity")
+}
+
+func TestE2E_InvalidDateIsBadRequest(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs?date_from=not-a-date")
+	assertStatus(t, resp, 400)
+}
+
+func TestE2E_InvalidSinceIsBadRequest(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs?since=tomorrow")
+	assertStatus(t, resp, 400)
+}
+
+func TestE2E_SinceDaysWorks(t *testing.T) {
+	h := newE2EHarness(t, false)
+	// 36500d ≈ 100y covers the 2023 fixture rows.
+	resp := h.get(t, "/logs?since=36500d")
+	assertStatus(t, resp, 200)
+	assertBodyContains(t, resp, "connection timeout")
+}
+
+func TestE2E_ContainsWildcardIsLiteral(t *testing.T) {
+	h := newE2EHarness(t, false)
+	// "%" must be matched literally (no rows), not as a LIKE wildcard that
+	// matches everything — and the ESCAPE clause must be valid SQLite.
+	resp := h.get(t, "/logs?since=87600h&body="+url.QueryEscape("%"))
+	assertStatus(t, resp, 200)
+	assertBodyContains(t, resp, "No logs found")
+}
+
+func TestE2E_JSONEmptyResultIsArray(t *testing.T) {
+	h := newE2EHarness(t, false)
+	payload := map[string]any{
+		"where": map[string]any{"eq": []any{"service_name", "no-such-service"}},
+		"limit": 10,
+	}
+	b, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPost, h.server.URL+"/logs/query", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := h.server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	assertStatus(t, resp, 200)
+	// Empty results must encode as [] so clients can unmarshal unconditionally.
+	if body := strings.TrimSpace(readBody(t, resp)); body != "[]" {
+		t.Errorf("expected empty JSON array, got %q", body)
+	}
+}
+
+func TestE2E_JSONRejectsUnknownField(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.postJSON(t, "/logs/query", map[string]any{"limt": 10})
+	assertStatus(t, resp, 400)
+}
+
+func TestE2E_JSONBodyTooLargeIsRejected(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.postJSON(t, "/logs/query", map[string]any{
+		"where": map[string]any{"contains": []any{"body", strings.Repeat("a", 2<<20)}},
+		"limit": 10,
+	})
+	assertStatus(t, resp, 400)
 }

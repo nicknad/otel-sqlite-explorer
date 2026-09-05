@@ -3,9 +3,12 @@
 package dsl
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // ============================================================================
@@ -195,6 +198,18 @@ type exprJSON struct {
 	Query     string     `json:"query,omitempty"` // for type "match"
 }
 
+// allowedTopLevelFields lists the recognized Query object keys. Unknown keys
+// are rejected so client typos (e.g. "limt") fail loudly instead of being
+// silently ignored.
+var allowedTopLevelFields = map[string]bool{
+	"select": true,
+	"where":  true,
+	"since":  true,
+	"sort":   true,
+	"limit":  true,
+	"offset": true,
+}
+
 // UnmarshalJSON implements json.Unmarshaler for Query.
 // It tries the shorthand format first, then falls back to the verbose format.
 func (q *Query) UnmarshalJSON(data []byte) error {
@@ -202,6 +217,12 @@ func (q *Query) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
+	}
+
+	for k := range raw {
+		if !allowedTopLevelFields[k] {
+			return fmt.Errorf("unknown field %q (allowed: select, where, since, sort, limit, offset)", k)
+		}
 	}
 
 	// Decode scalar fields.
@@ -279,17 +300,21 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 		opVal = v
 	}
 
-	// Check logical operators first.
+	// Check logical operators first (n-ary: folded left into a binary tree).
 	switch LogicalOp(opKey) {
 	case OpAnd, OpOr:
 		exprs, err := unmarshalExprSlice(opVal)
 		if err != nil {
 			return nil, err
 		}
-		if len(exprs) != 2 {
-			return nil, fmt.Errorf("%s requires exactly 2 sub-expressions, got %d", opKey, len(exprs))
+		if len(exprs) < 2 {
+			return nil, fmt.Errorf("%s requires at least 2 sub-expressions, got %d", opKey, len(exprs))
 		}
-		return LogicalExpr{LogicalOp: LogicalOp(opKey), Left: exprs[0], Right: exprs[1]}, nil
+		result := exprs[0]
+		for _, e := range exprs[1:] {
+			result = LogicalExpr{LogicalOp: LogicalOp(opKey), Left: result, Right: e}
+		}
+		return result, nil
 	}
 
 	// match is a leaf with a single string value (FTS5 query syntax).
@@ -301,17 +326,46 @@ func tryShorthandExpr(data json.RawMessage) (Expr, error) {
 		return MatchExpr{Query: s}, nil
 	}
 
-	// Check comparison operators.
+	// Check comparison operators. The value may be any JSON scalar (string,
+	// number, or boolean); numbers keep full int64 precision.
 	switch Op(opKey) {
-	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpContains:
-		parts, err := unmarshalStringSlice(opVal)
-		if err != nil {
+	case OpContains:
+		// Contains is always a substring match: a JSON string value stays a
+		// string verbatim (even when fully numeric, e.g. "404"), so body
+		// searches for numbers keep working.
+		var parts []json.RawMessage
+		if err := json.Unmarshal(opVal, &parts); err != nil {
+			return nil, err
+		}
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("contains requires [field, value], got %d elements", len(parts))
+		}
+		var field string
+		if err := json.Unmarshal(parts[0], &field); err != nil {
+			return nil, errors.New("contains: first element must be a field name")
+		}
+		var sval string
+		if err := json.Unmarshal(parts[1], &sval); err != nil {
+			return nil, errors.New("contains: second element must be a string")
+		}
+		return BinaryExpr{Op: OpContains, Field: field, Value: Value{Type: ValueString, String: sval}}, nil
+	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
+		var parts []json.RawMessage
+		if err := json.Unmarshal(opVal, &parts); err != nil {
 			return nil, err
 		}
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("%s requires [field, value], got %d elements", opKey, len(parts))
 		}
-		return BinaryExpr{Op: Op(opKey), Field: parts[0], Value: stringToValue(parts[1])}, nil
+		var field string
+		if err := json.Unmarshal(parts[0], &field); err != nil {
+			return nil, fmt.Errorf("%s: first element must be a field name", opKey)
+		}
+		val, err := decodeValue(parts[1])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", opKey, err)
+		}
+		return BinaryExpr{Op: Op(opKey), Field: field, Value: val}, nil
 
 	case OpBetween:
 		arr, err := unmarshalMixedSlice(opVal)
@@ -383,38 +437,44 @@ func unmarshalExprSlice(data json.RawMessage) ([]Expr, error) {
 	return exprs, nil
 }
 
-// unmarshalStringSlice parses a JSON array of strings.
-func unmarshalStringSlice(data json.RawMessage) ([]string, error) {
-	var raw []string
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, err
+// decodeValue parses a single JSON scalar into a DSL Value, preserving full
+// int64 precision for large integers (e.g. nanosecond timestamps) via
+// json.Number. A JSON string is further probed as a number so the shorthand
+// form stays convenient for numeric fields.
+func decodeValue(data json.RawMessage) (Value, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return Value{}, fmt.Errorf("invalid value: %s", string(data))
 	}
-	return raw, nil
+	if s, ok := v.(string); ok {
+		return stringToValue(s), nil
+	}
+	return jsonToValue(v)
 }
 
-// unmarshalMixedSlice parses a JSON array of mixed types (used for between/in).
+// unmarshalMixedSlice parses a JSON array of mixed types (used for between/in),
+// preserving number precision via json.Number.
 func unmarshalMixedSlice(data json.RawMessage) ([]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	var raw []any
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := dec.Decode(&raw); err != nil {
 		return nil, err
 	}
 	return raw, nil
 }
 
-// stringToValue creates a Value from a JSON string, trying to parse numbers.
+// stringToValue creates a Value from a JSON string, parsing fully-numeric
+// strings as int (or float) and leaving everything else a string.
 func stringToValue(s string) Value {
-	// If it looks like a number, parse as int.
-	if s != "" && s[0] >= '0' && s[0] <= '9' {
-		// Try int
-		var i int64
-		if _, err := fmt.Sscanf(s, "%d", &i); err == nil {
-			return Value{Type: ValueInt, Int: i}
-		}
-		// Try float
-		var f float64
-		if _, err := fmt.Sscanf(s, "%f", &f); err == nil {
-			return Value{Type: ValueFloat, Float: f}
-		}
+	trimmed := strings.TrimSpace(s)
+	if i, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+		return Value{Type: ValueInt, Int: i}
+	}
+	if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
+		return Value{Type: ValueFloat, Float: f}
 	}
 	return Value{Type: ValueString, String: s}
 }

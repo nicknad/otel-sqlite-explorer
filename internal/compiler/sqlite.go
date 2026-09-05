@@ -198,11 +198,27 @@ func Compile(q *dsl.Query) (*CompiledQuery, error) {
 		// bm25 returns more-negative scores for better matches, so ASC
 		// puts the most relevant rows first.
 		b.WriteString(" ORDER BY bm25(logs_fts) ASC")
+	default:
+		// Defense in depth: callers that bypass Normalize still get a
+		// deterministic order so LIMIT/OFFSET pagination is stable.
+		col, _ := colExpr("timestamp", matched) // known field, never errors
+		b.WriteString(" ORDER BY " + col + " DESC")
 	}
 
 	// ---- LIMIT / OFFSET ----
+	// Clamped defensively; validated callers always pass through Normalize,
+	// which applies the same defaults. The MaxLimit+1 headroom preserves the
+	// API layer's limit+1 "has next page" probe.
+	limit := q.Limit
+	if limit <= 0 {
+		limit = dsl.DefaultLimit
+	}
+	if limit > dsl.MaxLimit+1 {
+		limit = dsl.MaxLimit + 1
+	}
+	offset := max(q.Offset, 0)
 	b.WriteString(" LIMIT ? OFFSET ?")
-	args = append(args, q.Limit, q.Offset)
+	args = append(args, limit, offset)
 
 	return &CompiledQuery{SQL: b.String(), Args: args, Fields: fields}, nil
 }
@@ -242,32 +258,47 @@ func (c *exprCompiler) compileBinary(e *dsl.BinaryExpr) (sql string, args []any,
 		return "", nil, err
 	}
 
+	// blobArg lowercases string arguments for BLOB (hex-encoded) fields so
+	// filters match regardless of the input's hex case. The compiler emits
+	// lower(hex(col)), hence the argument must be lowercase too.
+	blobArg := func(v any) any {
+		if isBlobField(e.Field) {
+			if s, ok := v.(string); ok {
+				return strings.ToLower(s)
+			}
+		}
+		return v
+	}
+
 	switch e.Op {
 	case dsl.OpEq:
-		return col + " = ?", []any{valueToAny(&e.Value)}, nil
+		return col + " = ?", []any{blobArg(valueToAny(&e.Value))}, nil
 	case dsl.OpNe:
-		return col + " != ?", []any{valueToAny(&e.Value)}, nil
+		return col + " != ?", []any{blobArg(valueToAny(&e.Value))}, nil
 	case dsl.OpGt:
-		return col + " > ?", []any{valueToAny(&e.Value)}, nil
+		return col + " > ?", []any{blobArg(valueToAny(&e.Value))}, nil
 	case dsl.OpGte:
-		return col + " >= ?", []any{valueToAny(&e.Value)}, nil
+		return col + " >= ?", []any{blobArg(valueToAny(&e.Value))}, nil
 	case dsl.OpLt:
-		return col + " < ?", []any{valueToAny(&e.Value)}, nil
+		return col + " < ?", []any{blobArg(valueToAny(&e.Value))}, nil
 	case dsl.OpLte:
-		return col + " <= ?", []any{valueToAny(&e.Value)}, nil
+		return col + " <= ?", []any{blobArg(valueToAny(&e.Value))}, nil
 	case dsl.OpContains:
 		val := valueToAny(&e.Value)
 		str, ok := val.(string)
 		if !ok {
 			return "", nil, errors.New("contains requires a string value")
 		}
-		return col + " LIKE ?", []any{"%" + str + "%"}, nil
+		if isBlobField(e.Field) {
+			str = strings.ToLower(str)
+		}
+		return col + " LIKE ? ESCAPE '\\'", []any{"%" + escapeLike(str) + "%"}, nil
 	case dsl.OpBetween:
 		if e.Value.Min == nil || e.Value.Max == nil {
 			return "", nil, errors.New("between requires min and max")
 		}
 		return col + " BETWEEN ? AND ?",
-			[]any{valueToAny(e.Value.Min), valueToAny(e.Value.Max)}, nil
+			[]any{blobArg(valueToAny(e.Value.Min)), blobArg(valueToAny(e.Value.Max))}, nil
 	case dsl.OpIn:
 		if len(e.Value.List) == 0 {
 			return "", nil, errors.New("in requires at least one value")
@@ -276,12 +307,22 @@ func (c *exprCompiler) compileBinary(e *dsl.BinaryExpr) (sql string, args []any,
 		args := make([]any, len(e.Value.List))
 		for i := range e.Value.List {
 			placeholders[i] = "?"
-			args[i] = valueToAny(&e.Value.List[i])
+			args[i] = blobArg(valueToAny(&e.Value.List[i]))
 		}
 		return fmt.Sprintf("%s IN (%s)", col, strings.Join(placeholders, ", ")), args, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported operator: %s", e.Op)
 	}
+}
+
+// escapeLike escapes the LIKE metacharacters `%`, `_`, and the escape
+// character itself so a `contains` filter always matches its input literally
+// (e.g. searching for "100%" does not match "100X").
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
 }
 
 func (c *exprCompiler) compileLogical(e *dsl.LogicalExpr) (sql string, args []any, err error) {

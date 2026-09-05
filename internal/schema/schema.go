@@ -46,4 +46,11 @@ SELECT
 	lr.service_name      AS service_name
 FROM log_event le
 JOIN log_resource lr ON le.resource_id = lr.id;
+
+-- Indexes serving the explorer's hot paths: the logs-view JOIN plus the
+-- timestamp / severity filters and default sort. Production databases owned
+-- by the otel-sqlite collector should carry the same indexes.
+CREATE INDEX IF NOT EXISTS idx_log_event_resource ON log_event(resource_id);
+CREATE INDEX IF NOT EXISTS idx_log_event_ts ON log_event(timestamp_ns);
+CREATE INDEX IF NOT EXISTS idx_log_event_sev ON log_event(severity_number);
 `

@@ -16,9 +16,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+ARG REVISION="unknown"
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X main.revision=${REVISION}" \
     -o /out/log-explorer ./cmd/server
 
 # ------------------------------------------------------------
@@ -46,6 +47,8 @@ RUN useradd \
 COPY --from=builder /out/log-explorer /usr/local/bin/log-explorer
 
 USER log-explorer
+
+EXPOSE 8080
 
 # Default: point at the sink database mounted at /data.
 ENTRYPOINT ["/usr/local/bin/log-explorer"]
