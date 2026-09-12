@@ -324,11 +324,13 @@ func (s *Server) runQuery(ctx context.Context, pd *pageData) error {
 	pd.Offset = q.Offset
 	pd.Since = q.Since
 
-	// Query one extra row to detect a next page. executeQuery re-runs the
-	// (idempotent) fallback/normalize on the probe copy.
+	// Query one extra row to detect a next page. The probe is compiled and
+	// executed directly (not through executeQuery) because re-normalizing it
+	// would clamp limit+1 back to MaxLimit, hiding the next page exactly when
+	// the requested limit is MaxLimit.
 	probe := q
 	probe.Limit = min(q.Limit+1, dsl.MaxLimit+1)
-	rows, err := s.executeQuery(ctx, &probe)
+	rows, err := s.compileExecute(ctx, &probe)
 	if err != nil {
 		return err
 	}
@@ -344,15 +346,19 @@ func (s *Server) runQuery(ctx context.Context, pd *pageData) error {
 
 // executeQuery runs a validated DSL query through the full pipeline: FTS
 // fallback (when the backing DB has no logs_fts index), normalization,
-// compilation, and execution. Both the fallback rewrite and Normalize are
-// idempotent, so calling it on an already-normalized query is safe.
-//
-// Execution failures are logged with their SQL and arguments server-side;
-// the returned error carries only the database message so handlers can
-// safely surface it without leaking internals.
+// compilation, and execution. Execution failures are logged with their SQL
+// and arguments server-side; the returned error carries only the database
+// message so handlers can safely surface it without leaking internals.
 func (s *Server) executeQuery(ctx context.Context, q *dsl.Query) ([]db.LogRow, error) {
 	s.rewriteMatchToContains(q)
 	dsl.Normalize(q)
+	return s.compileExecute(ctx, q)
+}
+
+// compileExecute validates FTS syntax, compiles, and executes an
+// already-normalized query. Callers that need the limit+1 headroom (the
+// pagination probe) must use this directly so Normalize cannot clamp it.
+func (s *Server) compileExecute(ctx context.Context, q *dsl.Query) ([]db.LogRow, error) {
 	if err := s.validateMatches(ctx, q); err != nil {
 		return nil, err
 	}
