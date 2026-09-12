@@ -193,6 +193,21 @@ func TestSinceInvalidIsRejected(t *testing.T) {
 	}
 }
 
+func TestSinceOverflowIsRejected(t *testing.T) {
+	// Days/weeks multiply into an int64 nanosecond duration; values that wrap
+	// must be rejected rather than silently producing a nonsensical window.
+	for _, since := range []string{"106752d", "200000d", "15251w", "99999999d"} {
+		q := dsl.Query{Since: since, Limit: 10}
+		if err := dsl.Validate(&q); err == nil {
+			t.Errorf("since=%q: expected overflow error, got nil", since)
+		}
+	}
+	q := dsl.Query{Since: "106751d", Limit: 10}
+	if err := dsl.Validate(&q); err != nil {
+		t.Errorf("since=106751d should be within range: %v", err)
+	}
+}
+
 func TestUnknownTopLevelFieldIsRejected(t *testing.T) {
 	var q dsl.Query
 	if err := json.Unmarshal([]byte(`{"limt": 10, "limit": 10}`), &q); err == nil {

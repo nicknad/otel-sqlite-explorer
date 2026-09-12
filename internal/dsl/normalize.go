@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -29,11 +30,18 @@ func ParseSince(s string) (time.Duration, error) {
 	if err != nil || n <= 0 {
 		return 0, fmt.Errorf("invalid duration %q", s)
 	}
-	d := time.Duration(n) * 24 * time.Hour
+	// Guard the multiplication against int64 overflow: time.Duration is an
+	// int64 nanosecond count, and unguarded day/week values wrap silently.
 	if unit == 'w' {
-		d *= 7
+		if int64(n) > math.MaxInt64/int64(7*24*time.Hour) {
+			return 0, fmt.Errorf("invalid duration %q: too large", s)
+		}
+		return time.Duration(n) * 7 * 24 * time.Hour, nil
 	}
-	return d, nil
+	if int64(n) > math.MaxInt64/int64(24*time.Hour) {
+		return 0, fmt.Errorf("invalid duration %q: too large", s)
+	}
+	return time.Duration(n) * 24 * time.Hour, nil
 }
 
 // Normalize applies defaults and transforms to a Query before compilation.
