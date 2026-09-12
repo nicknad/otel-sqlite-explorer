@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,9 @@ func NewServer(database *db.Client) (*Server, error) {
 		"lower": strings.ToLower,
 		"add":   func(a, b int) int { return a + b },
 		"sub":   func(a, b int) int { return a - b },
+		"in": func(needle string, haystack ...string) bool {
+			return slices.Contains(haystack, needle)
+		},
 		"hasAttributes": func(raw string) bool {
 			var attrs map[string]json.RawMessage
 			return json.Unmarshal([]byte(raw), &attrs) == nil && len(attrs) > 0
@@ -318,11 +322,13 @@ func (s *Server) runQuery(ctx context.Context, pd *pageData) error {
 
 	// Normalize the base query so the probe below uses effective defaults, and
 	// mirror those values back onto the page data for form re-rendering.
+	// q.Since is consumed by Normalize, so preserve the raw form value first.
+	since := pd.Since
 	s.rewriteMatchToContains(&q)
 	dsl.Normalize(&q)
 	pd.Limit = q.Limit
 	pd.Offset = q.Offset
-	pd.Since = q.Since
+	pd.Since = since
 
 	// Query one extra row to detect a next page. The probe is compiled and
 	// executed directly (not through executeQuery) because re-normalizing it

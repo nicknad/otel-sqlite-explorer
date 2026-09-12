@@ -829,6 +829,20 @@ func TestE2E_SinceDaysWorks(t *testing.T) {
 	assertBodyContains(t, resp, "connection timeout")
 }
 
+func TestE2E_SinceSelectionPreserved(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs?since=24h")
+	assertStatus(t, resp, 200)
+	assertBodyContains(t, resp, `<option value="24h" selected>`)
+}
+
+func TestE2E_CustomSinceSelectionPreserved(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs?since=48h")
+	assertStatus(t, resp, 200)
+	assertBodyContains(t, resp, `<option value="48h" selected>`)
+}
+
 func TestE2E_ContainsWildcardIsLiteral(t *testing.T) {
 	h := newE2EHarness(t, false)
 	// "%" must be matched literally (no rows), not as a LIKE wildcard that

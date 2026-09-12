@@ -69,6 +69,16 @@ h2 {
   color: #8b949e;
   gap: 0.25rem;
 }
+.filters .search-field {
+  flex: 1;
+  min-width: 240px;
+}
+.filters .search-field input {
+  width: 100%;
+}
+.filters small {
+  color: #8b949e;
+}
 .filters input,
 .filters select {
   background: #21262d;
@@ -103,9 +113,6 @@ h2 {
 }
 .filters button.secondary:hover:not(:disabled) {
   background: #30363d;
-}
-.fts-button {
-  margin-bottom: 1rem;
 }
 table {
   width: 100%;
