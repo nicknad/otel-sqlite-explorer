@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -25,7 +26,9 @@ import (
 var revision = "dev"
 
 func main() {
-	addr := flag.String("addr", ":8080", "HTTP listen address")
+	// The default binds to loopback only: the service has no authentication,
+	// so exposing it on all interfaces must be an explicit choice.
+	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
 	dbPath := flag.String("db", "", "Path to SQLite database (required)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
@@ -84,20 +87,28 @@ func main() {
 	}
 
 	// Graceful shutdown: stop accepting new connections on SIGINT/SIGTERM
-	// and give in-flight requests a few seconds to finish.
+	// and give in-flight requests a few seconds to finish. A listen failure
+	// is surfaced through errCh so deferred cleanup (database close) still
+	// runs instead of log.Fatalf exiting mid-goroutine.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(quit)
 
+	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("log-explorer listening on %s", *addr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server: %v", err)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
 		}
 	}()
 
-	<-quit
-	log.Println("shutting down...")
+	select {
+	case err := <-errCh:
+		log.Printf("http server: %v", err)
+	case <-quit:
+		log.Println("shutting down...")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {

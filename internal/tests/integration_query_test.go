@@ -403,21 +403,24 @@ func TestIntegrationComparisonOperators(t *testing.T) {
 		return len(rows)
 	}
 
-	intVal := func(n int64) dsl.Value { return dsl.Value{Type: dsl.ValueInt, Int: n} }
+	int9 := dsl.Value{Type: dsl.ValueInt, Int: 9}
+	int13 := dsl.Value{Type: dsl.ValueInt, Int: 13}
+	int17 := dsl.Value{Type: dsl.ValueInt, Int: 17}
+	minVal, maxVal := int9, int13
 	cases := []struct {
 		name  string
 		where dsl.Expr
 		want  int
 	}{
 		{"ne", dsl.BinaryExpr{Op: dsl.OpNe, Field: "severity", Value: dsl.Value{Type: dsl.ValueString, String: "ERROR"}}, 3},
-		{"gt", dsl.BinaryExpr{Op: dsl.OpGt, Field: "severity_number", Value: intVal(9)}, 3},
-		{"gte", dsl.BinaryExpr{Op: dsl.OpGte, Field: "severity_number", Value: intVal(17)}, 2},
-		{"lt", dsl.BinaryExpr{Op: dsl.OpLt, Field: "severity_number", Value: intVal(9)}, 1},
-		{"lte", dsl.BinaryExpr{Op: dsl.OpLte, Field: "severity_number", Value: intVal(9)}, 2},
+		{"gt", dsl.BinaryExpr{Op: dsl.OpGt, Field: "severity_number", Value: int9}, 3},
+		{"gte", dsl.BinaryExpr{Op: dsl.OpGte, Field: "severity_number", Value: int17}, 2},
+		{"lt", dsl.BinaryExpr{Op: dsl.OpLt, Field: "severity_number", Value: int9}, 1},
+		{"lte", dsl.BinaryExpr{Op: dsl.OpLte, Field: "severity_number", Value: int9}, 2},
 		{"between", dsl.BinaryExpr{
 			Op:    dsl.OpBetween,
 			Field: "severity_number",
-			Value: dsl.Value{Min: new(intVal(9)), Max: new(intVal(13))},
+			Value: dsl.Value{Min: &minVal, Max: &maxVal},
 		}, 2},
 		{"in", dsl.BinaryExpr{
 			Op:    dsl.OpIn,
@@ -433,6 +436,3 @@ func TestIntegrationComparisonOperators(t *testing.T) {
 		})
 	}
 }
-
-//go:fix inline
-func ptr(v dsl.Value) *dsl.Value { return new(v) }

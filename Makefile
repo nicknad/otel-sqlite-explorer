@@ -9,14 +9,16 @@ ADDR    := :8080
 # `rm` is not available on Windows, and `del` rejects forward-slash paths, so
 # the delete command and its arguments are picked per OS.
 ifeq ($(OS),Windows_NT)
-  RM        := del /q
-  CLEANARGS := $(subst /,\,$(BIN) $(MOCK_DB))
+  RM      := del /q
+  DELBIN  := $(subst /,\,$(BIN))
+  DELMOCK := $(subst /,\,$(MOCK_DB))
 else
-  RM        := rm -f
-  CLEANARGS := $(BIN) $(MOCK_DB)
+  RM      := rm -f
+  DELBIN  := $(BIN)
+  DELMOCK := $(MOCK_DB)
 endif
 
-.PHONY: all build fmt test lint vet mock-db serve-mock run-mock clean-mock
+.PHONY: all build fmt test lint vet mock-db serve-mock run-mock clean clean-mock
 
 all: build
 
@@ -50,5 +52,8 @@ serve-mock: mock-db
 run-mock: build mock-db
 	$(BIN) -db $(MOCK_DB) -addr $(ADDR)
 
+clean:
+	-$(RM) $(DELBIN)
+
 clean-mock:
-	-$(RM) $(CLEANARGS)
+	-$(RM) $(DELMOCK)

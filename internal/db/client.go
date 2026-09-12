@@ -115,8 +115,9 @@ func validateReadModel(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// DB returns the underlying *sql.DB for query execution.
-// Callers must hold the mutex for thread safety.
+// DB returns the underlying *sql.DB for diagnostics and tests. Queries issued
+// through it bypass the client timeout and association with request contexts;
+// production code should use ExecuteContext instead.
 func (c *Client) DB() *sql.DB {
 	return c.db
 }

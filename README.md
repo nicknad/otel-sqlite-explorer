@@ -97,7 +97,7 @@ the search box to appear.
 | Flag       | Default | Description                        |
 |------------|---------|------------------------------------|
 | `-db`      | —       | Path to SQLite database (required) |
-| `-addr`    | `:8080` | HTTP listen address                |
+| `-addr`    | `127.0.0.1:8080` | HTTP listen address (use `:8080` to expose on all interfaces) |
 | `-version` | —       | Print version and exit             |
 
 `GET /healthz` returns `{"status":"ok"}` (503 when the database is
