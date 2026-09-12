@@ -11,10 +11,13 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log"
 	"math"
 	"mime"
 	"net/http"
+	"path"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -85,9 +88,20 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Liveness probe for orchestrators; pings the database without running
 	// a real log query.
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	// Global stylesheet shared by every page, cacheable for an hour.
+	// Global static assets, cacheable for an hour. Directory paths are
+	// rejected so the embedded FS cannot be browsed.
 	static := http.FileServer(http.FS(ui.Static))
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+		info, err := fs.Stat(ui.Static, name)
+		if err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		static.ServeHTTP(w, r)
 	})))
@@ -97,14 +111,53 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	})
 }
 
-// Handler wraps mux with baseline security headers. The server entrypoint
-// uses it; tests may serve the mux directly.
+// responseTracker records whether anything was written so panic recovery
+// does not emit a superfluous WriteHeader after a partial response.
+type responseTracker struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (t *responseTracker) WriteHeader(code int) {
+	if !t.wrote {
+		t.wrote = true
+		t.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (t *responseTracker) Write(b []byte) (int, error) {
+	t.wrote = true
+	return t.ResponseWriter.Write(b)
+}
+
+// Handler wraps mux with baseline security headers, a default no-store cache
+// policy, and panic recovery. Static assets override the cache policy.
 func (s *Server) Handler(mux http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		mux.ServeHTTP(w, r)
+		// All assets are self-hosted; inline styles appear in templates but no
+		// inline scripts are used.
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'self'")
+		// Log payloads may be sensitive; do not let intermediaries persist them.
+		w.Header().Set("Cache-Control", "no-store")
+
+		tw := &responseTracker{ResponseWriter: w}
+		defer func() {
+			if rec := recover(); rec != nil && rec != http.ErrAbortHandler {
+				// strconv.Quote neutralizes newlines and control characters,
+				// so the tainted path cannot forge log entries.
+				log.Printf("panic serving %s %s: %v\n%s", r.Method, strconv.Quote(r.URL.Path), rec, debug.Stack()) //nolint:gosec // G706: path is quoted
+				if !tw.wrote {
+					http.Error(tw, "Internal server error", http.StatusInternalServerError)
+					return
+				}
+			}
+		}()
+		mux.ServeHTTP(tw, r)
 	})
 }
 

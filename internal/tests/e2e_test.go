@@ -884,10 +884,30 @@ func TestE2E_SecurityHeaders(t *testing.T) {
 		"X-Content-Type-Options": "nosniff",
 		"X-Frame-Options":        "SAMEORIGIN",
 		"Referrer-Policy":        "no-referrer",
+		"Cache-Control":          "no-store",
 	} {
 		if got := resp.Header.Get(k); got != want {
 			t.Errorf("header %s: got %q, want %q", k, got, want)
 		}
+	}
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Errorf("missing restrictive CSP: %q", csp)
+	}
+}
+
+func TestE2E_StaticDirectoryListingIsBlocked(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/static/")
+	assertStatus(t, resp, 404)
+}
+
+func TestE2E_StaticAssetsAreCacheable(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/static/style.css")
+	assertStatus(t, resp, 200)
+	_ = readBody(t, resp)
+	if cc := resp.Header.Get("Cache-Control"); cc != "public, max-age=3600" {
+		t.Errorf("static Cache-Control: got %q, want public, max-age=3600", cc)
 	}
 }
 
