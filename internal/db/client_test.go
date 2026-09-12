@@ -45,6 +45,7 @@ func TestOpenRejectsDatabaseWithoutLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	defer func() { _ = conn.Close() }()
 	if _, execErr := conn.Exec("CREATE TABLE foo (x INTEGER)"); execErr != nil {
 		t.Fatalf("create table: %v", execErr)
 	}
@@ -68,6 +69,7 @@ func TestOpenRejectsIncompleteLogsReadModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	defer func() { _ = conn.Close() }()
 	if _, execErr := conn.Exec(`CREATE TABLE logs (
 		id INTEGER,
 		timestamp_ns INTEGER,
@@ -103,6 +105,7 @@ func TestOpenPathWithURISpecialCharacters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	defer func() { _ = conn.Close() }()
 	if _, execErr := conn.Exec(`CREATE TABLE logs (
 		id INTEGER,
 		timestamp_ns INTEGER,
@@ -117,7 +120,7 @@ func TestOpenPathWithURISpecialCharacters(t *testing.T) {
 		t.Fatalf("create logs table: %v", execErr)
 	}
 	if _, execErr := conn.Exec(
-		`INSERT INTO logs VALUES (1, 1, 'ERROR', 17, 'svc', NULL, 'boom', '{}')`,
+		`INSERT INTO logs VALUES (1, 1, 'ERROR', 17, 'svc', x'00', x'01', 'boom', '{}')`,
 	); execErr != nil {
 		t.Fatalf("insert row: %v", execErr)
 	}
