@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -284,8 +285,10 @@ func TestCompilerContainsEscapesWildcards(t *testing.T) {
 	}
 }
 
-func TestCompilerBlobFilterIsCaseInsensitive(t *testing.T) {
-	// Uppercase hex trace ids must match the lower(hex(...)) expression.
+func TestCompilerBlobEqualityUsesDecodedBytes(t *testing.T) {
+	// Valid hex trace ids are decoded to raw bytes and compared against the
+	// BLOB column directly, so a trace_id index can serve the filter.
+	// Uppercase input is accepted.
 	input := `{"where": {"eq": ["trace_id", "00112233445566778899AABBCCDDEEFF"]}, "limit": 10}`
 	var q dsl.Query
 	if err := json.Unmarshal([]byte(input), &q); err != nil {
@@ -300,8 +303,35 @@ func TestCompilerBlobFilterIsCaseInsensitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if len(cq.Args) == 0 || cq.Args[0] != "00112233445566778899aabbccddeeff" {
-		t.Errorf("expected lowercased hex arg, got %v", cq.Args)
+	if !strings.Contains(cq.SQL, "WHERE trace_id = ?") {
+		t.Errorf("expected direct BLOB comparison in WHERE, got: %s", cq.SQL)
+	}
+	want, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	if len(cq.Args) == 0 || !reflect.DeepEqual(cq.Args[0], want) {
+		t.Errorf("expected decoded BLOB arg %x, got %v", want, cq.Args)
+	}
+}
+
+func TestCompilerBlobEqualityNonHexFallsBack(t *testing.T) {
+	input := `{"where": {"eq": ["trace_id", "not-hex!"]}, "limit": 10}`
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(input), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	dsl.Normalize(&q)
+
+	cq, err := compiler.Compile(&q)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(cq.SQL, "lower(hex(trace_id)) = ?") {
+		t.Errorf("expected hex-wrapped comparison for non-hex input, got: %s", cq.SQL)
+	}
+	if len(cq.Args) == 0 || cq.Args[0] != "not-hex!" {
+		t.Errorf("expected raw fallback arg, got %v", cq.Args)
 	}
 }
 

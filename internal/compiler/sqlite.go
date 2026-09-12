@@ -4,6 +4,7 @@
 package compiler
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -236,6 +237,20 @@ func (c *exprCompiler) col(field string) (string, error) {
 	return colExpr(field, c.qualify)
 }
 
+// rawCol returns the un-wrapped SQL column reference. Equality filters on BLOB
+// fields compare the raw column against decoded bytes so SQLite can use an
+// index on trace_id/span_id.
+func (c *exprCompiler) rawCol(field string) (string, error) {
+	col, ok := fieldMap[field]
+	if !ok {
+		return "", fmt.Errorf("unsupported field: %s", field)
+	}
+	if c.qualify {
+		col = "logs." + col
+	}
+	return col, nil
+}
+
 // compileExpr walks an expression tree and returns SQL + args.
 func (c *exprCompiler) compileExpr(e dsl.Expr) (sql string, args []any, err error) {
 	switch expr := e.(type) {
@@ -272,6 +287,15 @@ func (c *exprCompiler) compileBinary(e *dsl.BinaryExpr) (sql string, args []any,
 
 	switch e.Op {
 	case dsl.OpEq:
+		if isBlobField(e.Field) {
+			if b, ok := hexBytes(valueToAny(&e.Value)); ok {
+				raw, rawErr := c.rawCol(e.Field)
+				if rawErr != nil {
+					return "", nil, rawErr
+				}
+				return raw + " = ?", []any{b}, nil
+			}
+		}
 		return col + " = ?", []any{blobArg(valueToAny(&e.Value))}, nil
 	case dsl.OpNe:
 		return col + " != ?", []any{blobArg(valueToAny(&e.Value))}, nil
@@ -323,6 +347,22 @@ func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, "%", "\\%")
 	s = strings.ReplaceAll(s, "_", "\\_")
 	return s
+}
+
+// hexBytes decodes an even-length hex string into raw bytes so BLOB equality
+// filters can compare the column directly (and use its index). It reports
+// false for values that are not valid hex, letting callers fall back to the
+// lower(hex(...)) string comparison.
+func hexBytes(v any) ([]byte, bool) {
+	s, ok := v.(string)
+	if !ok || s == "" || len(s)%2 != 0 {
+		return nil, false
+	}
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }
 
 func (c *exprCompiler) compileLogical(e *dsl.LogicalExpr) (sql string, args []any, err error) {
