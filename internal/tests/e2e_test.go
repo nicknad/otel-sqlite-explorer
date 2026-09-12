@@ -391,6 +391,36 @@ func TestE2E_StaticStylesheetServed(t *testing.T) {
 	if !strings.Contains(body, "body {") || !strings.Contains(body, "error-card") {
 		t.Errorf("stylesheet missing expected rules")
 	}
+	if !strings.Contains(body, "sev-fatal") {
+		t.Errorf("stylesheet missing fatal severity rule")
+	}
+}
+
+func TestE2E_StaticAppJSServed(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/static/app.js")
+	assertStatus(t, resp, 200)
+	assertBodyContains(t, resp, "error-banner")
+}
+
+func TestE2E_RowLinkPreservesFilters(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs?since=87600h&limit=100")
+	assertStatus(t, resp, 200)
+	body := readBody(t, resp)
+	if !strings.Contains(body, `href="/logs/1?limit=100&amp;since=87600h"`) {
+		t.Errorf("row link does not preserve filters; body: %s", truncate([]byte(body), 800))
+	}
+}
+
+func TestE2E_BackLinkPreservesFilters(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs/1?since=87600h&severity=ERROR")
+	assertStatus(t, resp, 200)
+	body := readBody(t, resp)
+	if !strings.Contains(body, `href="/logs?severity=ERROR&amp;since=87600h"`) {
+		t.Errorf("back link does not preserve filters; body: %s", truncate([]byte(body), 800))
+	}
 }
 
 // ==========================================================================

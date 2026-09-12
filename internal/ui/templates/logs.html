@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Log Explorer</title>
 <script src="/static/htmx.min.js"></script>
+  <script src="/static/app.js" defer></script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 
@@ -79,23 +80,27 @@
 
   <div id="spinner">Loading…</div>
 
-  <div id="results">
+  <div id="error-banner" class="error-banner" role="alert" hidden></div>
+
+  <div id="results" aria-live="polite">
     <!-- Log table — tbody is the HTMX swap target -->
-    <table>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Service</th>
-          <th>Level</th>
-          <th>Trace</th>
-          <th>Span</th>
-          <th>Body</th>
-        </tr>
-      </thead>
-      <tbody id="log-table-body">
-        {{template "rows" .}}
-      </tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">Service</th>
+            <th scope="col">Level</th>
+            <th scope="col">Trace</th>
+            <th scope="col">Span</th>
+            <th scope="col">Body</th>
+          </tr>
+        </thead>
+        <tbody id="log-table-body">
+          {{template "rows" .}}
+        </tbody>
+      </table>
+    </div>
 
     <!-- Pagination — submits the same form with a modified offset. -->
     <div id="pager" class="pager">

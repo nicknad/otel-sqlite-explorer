@@ -40,6 +40,9 @@ func NewServer(database *db.Client) (*Server, error) {
 		"nstime": func(ns int64) string {
 			return time.Unix(0, ns).UTC().Format("2006-01-02 15:04:05.000")
 		},
+		"nstimeFull": func(ns int64) string {
+			return time.Unix(0, ns).UTC().Format(time.RFC3339Nano)
+		},
 		"lower": strings.ToLower,
 		"in": func(needle string, haystack ...string) bool {
 			return slices.Contains(haystack, needle)
@@ -131,6 +134,9 @@ type pageData struct {
 	NextOffset int
 	HasPrev    bool
 	HasNext    bool
+	// QuerySuffix is the canonical "?a=b&c=d" form of the active filters, used
+	// to preserve state in row and back links. Empty when there are none.
+	QuerySuffix string
 }
 
 // ============================================================================
@@ -143,6 +149,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	pd.QuerySuffix = querySuffix(r)
 	if err := s.runQuery(r.Context(), &pd); err != nil {
 		// User-supplied filter problems (bad severity, date, limit, …) are
 		// the client's fault; anything else is a server-side failure.
@@ -270,7 +277,8 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Log": rows[0],
+		"Log":         rows[0],
+		"QuerySuffix": querySuffix(r),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpls.ExecuteTemplate(w, "detail.html", data); err != nil {
@@ -546,6 +554,17 @@ func toUnixNano(t time.Time) (int64, error) {
 		return 0, fmt.Errorf("%s is outside the supported range (1677-09-21 to 2262-04-11)", t.Format("2006-01-02"))
 	}
 	return t.UnixNano(), nil
+}
+
+// querySuffix returns the active query string as a canonical "?a=b&c=d"
+// suffix (sorted, properly encoded), or "" when there are no parameters. The
+// whole suffix is interpolated into href attributes so html/template does not
+// percent-encode the separators.
+func querySuffix(r *http.Request) string {
+	if r.URL.RawQuery == "" {
+		return ""
+	}
+	return "?" + r.URL.Query().Encode()
 }
 
 // andExprs combines a slice of expressions into a single AND tree.

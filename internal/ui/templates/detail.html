@@ -11,13 +11,13 @@
 </head>
 
 <body>
-  <a class="back" href="/logs">← Back to logs</a>
+  <a class="back" href="/logs{{.QuerySuffix}}">← Back to logs</a>
   <h1>Log #{{.Log.ID}}</h1>
 
   <div class="card">
     <dl class="grid">
       <dt>Timestamp</dt>
-      <dd class="mono">{{.Log.Timestamp | nstime}}</dd>
+      <dd class="mono">{{.Log.Timestamp | nstimeFull}}</dd>
       <dt>Severity</dt>
       <dd class="sev-{{.Log.Severity | lower}}">{{.Log.Severity}}</dd>
       <dt>Service</dt>
