@@ -150,7 +150,7 @@ func (s *Server) Handler(mux http.Handler) http.Handler {
 			if rec := recover(); rec != nil && rec != http.ErrAbortHandler {
 				// strconv.Quote neutralizes newlines and control characters,
 				// so the tainted path cannot forge log entries.
-				log.Printf("panic serving %s %s: %v\n%s", r.Method, strconv.Quote(r.URL.Path), rec, debug.Stack()) //nolint:gosec // G706: path is quoted
+				log.Printf("panic serving %s %s: %v\n%s", r.Method, strconv.Quote(r.URL.Path), rec, debug.Stack()) // #nosec G706 -- request path is quoted
 				if !tw.wrote {
 					http.Error(tw, "Internal server error", http.StatusInternalServerError)
 					return

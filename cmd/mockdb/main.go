@@ -200,7 +200,7 @@ func (g *generator) newTraceID() []byte {
 	b := make([]byte, 16)
 	if _, err := cryptorand.Read(b); err != nil {
 		for i := range b {
-			b[i] = byte(g.rng.IntN(256)) //nolint:gosec // G115: 0-255 by construction (crypto fallback only)
+			b[i] = byte(g.rng.IntN(256)) // #nosec G115 -- 0-255 by construction (crypto fallback only)
 		}
 	}
 	return b
@@ -210,7 +210,7 @@ func (g *generator) newSpanID() []byte {
 	b := make([]byte, 8)
 	if _, err := cryptorand.Read(b); err != nil {
 		for i := range b {
-			b[i] = byte(g.rng.IntN(256)) //nolint:gosec // G115: 0-255 by construction (crypto fallback only)
+			b[i] = byte(g.rng.IntN(256)) // #nosec G115 -- 0-255 by construction (crypto fallback only)
 		}
 	}
 	return b
@@ -353,9 +353,9 @@ func main() {
 	// A seeded PRNG is intentional here so mock data is reproducible.
 	var rng *rand.Rand
 	if *seed >= 0 {
-		rng = rand.New(rand.NewPCG(uint64(*seed), 0x9e3779b97f4a7c15)) //nolint:gosec // G404: as above
+		rng = rand.New(rand.NewPCG(uint64(*seed), 0x9e3779b97f4a7c15)) // #nosec G404 -- weak RNG intentional for reproducible mock data
 	} else {
-		rng = rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(os.Getpid()))) //nolint:gosec // G404: as above
+		rng = rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(os.Getpid()))) // #nosec G115 G404 -- timestamp/pid are non-negative; weak RNG intentional
 	}
 	gen := &generator{rng: rng}
 	ctx := context.Background()
