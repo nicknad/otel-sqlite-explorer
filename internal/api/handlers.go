@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -468,13 +469,13 @@ func parseDateTime(s string, endOfDay bool) (int64, error) {
 	// datetime-local carries no offset; interpret it in local time.
 	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02T15:04"} {
 		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			return t.UTC().UnixNano(), nil
+			return toUnixNano(t)
 		}
 	}
 	// RFC3339 timestamps carry their own offset.
 	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC().UnixNano(), nil
+			return toUnixNano(t)
 		}
 	}
 	// Date only — start or end of that day (UTC).
@@ -485,9 +486,27 @@ func parseDateTime(s string, endOfDay bool) (int64, error) {
 	if endOfDay {
 		// End of day: 23:59:59.999999999 UTC
 		end := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
-		return end.UnixNano(), nil
+		return toUnixNano(end)
 	}
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).UnixNano(), nil
+	return toUnixNano(time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC))
+}
+
+// unixNanoMin/unixNanoMax bound the representable int64 nanosecond range
+// (1677-09-21T00:12:43Z to 2262-04-11T23:47:16Z). time.Time.UnixNano is
+// undefined outside it, so out-of-range form values must be rejected.
+var (
+	unixNanoMin = time.Unix(0, math.MinInt64).UTC()
+	unixNanoMax = time.Unix(0, math.MaxInt64).UTC()
+)
+
+// toUnixNano converts t to UTC epoch nanoseconds, rejecting timestamps whose
+// UnixNano would silently wrap.
+func toUnixNano(t time.Time) (int64, error) {
+	t = t.UTC()
+	if t.Before(unixNanoMin) || t.After(unixNanoMax) {
+		return 0, fmt.Errorf("%s is outside the supported range (1677-09-21 to 2262-04-11)", t.Format("2006-01-02"))
+	}
+	return t.UnixNano(), nil
 }
 
 // andExprs combines a slice of expressions into a single AND tree.

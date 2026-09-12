@@ -58,3 +58,16 @@ func TestParseDateTimeInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDateTimeRejectsOutOfRange(t *testing.T) {
+	// UnixNano is only defined between 1677-09-21 and 2262-04-11; dates
+	// outside it must be rejected rather than silently wrapping.
+	for _, s := range []string{"9999-12-31", "0001-01-01", "9999-12-31T23:59", "2263-01-01"} {
+		if _, err := parseDateTime(s, false); err == nil {
+			t.Errorf("%q: expected out-of-range error, got nil", s)
+		}
+	}
+	if _, err := parseDateTime("2262-04-11", false); err != nil {
+		t.Errorf("2262-04-11 should be representable: %v", err)
+	}
+}
