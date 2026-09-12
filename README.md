@@ -88,7 +88,9 @@ index at startup:
   API clients keep working.
 
 The index itself is created and kept current by the write sidecar
-([otel-sqlite](https://codeberg.org/nicknad/otel-sqlite) collector).
+([otel-sqlite](https://codeberg.org/nicknad/otel-sqlite) collector). It is
+detected once at startup: restart the explorer after the index is created for
+the search box to appear.
 
 ### Flags
 
@@ -123,8 +125,11 @@ Notes on filter semantics:
 - **From** with a bare date starts at the beginning of that day;
   **To** with a bare date covers through the end of that day.
   `datetime-local` values are interpreted in the server's time zone.
-- Invalid filter values (unknown severity, unparseable date or `since`)
-  return `400` with an explanation instead of silently querying.
+  Dates outside 1677-09-21 to 2262-04-11 (the int64 nanosecond range) are
+  rejected.
+- Invalid filter values (unknown severity, unparseable date or `since`,
+  non-numeric or out-of-range `limit`/`offset`) return `400` with an
+  explanation instead of silently querying.
 
 ### JSON API
 
@@ -162,10 +167,15 @@ Response:
     "service_name": "api-gateway",
     "trace_id": "0200000000000000f900000000000000",
     "span_id": "7f851e0000000000",
-    "body": "connection timeout to upstream"
+    "body": "connection timeout to upstream",
+    "attributes_json": "{\"component\":\"gateway\",\"attempt\":2}"
   }
 ]
 ```
+
+A partial `select` returns zero values for the fields that were not selected
+(e.g. `{"select":"body"}` still emits `id: 0` and empty strings), so clients
+should rely on the requested field list rather than checking for absence.
 
 ### DSL reference
 
@@ -252,12 +262,16 @@ A hybrid query combining full-text and structured filters:
 | `select` | string   | `*` (default) or comma-separated field list               |
 | `where`  | expr     | Filter tree (see above)                                   |
 | `since`  | string   | Duration window: `"1h"`, `"24h"`, `"7d"`, `"1w"` (positive, `d` = days, `w` = weeks) |
-| `sort`   | []Sort   | `[{field, desc}]`; defaults to timestamp DESC             |
-| `limit`  | int      | 1–1000, default 100                                       |
+| `sort`   | []Sort   | `[{field, desc}]`; defaults to timestamp DESC (or bm25 relevance for `match` queries) |
+| `limit`  | int      | 1–1000, default 100 (`0` also means default)              |
 | `offset` | int      | Pagination offset, default 0                              |
 
 **Allowed fields:** `id`, `timestamp`, `severity`, `severity_number`,
 `service_name`, `trace_id`, `span_id`, `body`, `attributes_json`.
+
+`trace_id` and `span_id` are assumed to be SQLite BLOB columns (as in the
+collector schema and the example view above); they are returned as lowercase
+hex and compared as raw bytes.
 
 
 ## License
