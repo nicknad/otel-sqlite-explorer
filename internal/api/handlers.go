@@ -41,8 +41,6 @@ func NewServer(database *db.Client) (*Server, error) {
 			return time.Unix(0, ns).UTC().Format("2006-01-02 15:04:05.000")
 		},
 		"lower": strings.ToLower,
-		"add":   func(a, b int) int { return a + b },
-		"sub":   func(a, b int) int { return a - b },
 		"in": func(needle string, haystack ...string) bool {
 			return slices.Contains(haystack, needle)
 		},
@@ -127,8 +125,12 @@ type pageData struct {
 	DateTo   string // RFC3339 / datetime-local end (inclusive)
 	Limit    int
 	Offset   int
-	HasPrev  bool
-	HasNext  bool
+	// PrevOffset / NextOffset are the pager submit values; PrevOffset is
+	// clamped to 0 so a partially-filled first page cannot page backwards.
+	PrevOffset int
+	NextOffset int
+	HasPrev    bool
+	HasNext    bool
 }
 
 // ============================================================================
@@ -136,7 +138,11 @@ type pageData struct {
 // ============================================================================
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	pd := pageDataFromForm(r)
+	pd, err := pageDataFromForm(r)
+	if err != nil {
+		s.renderError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.runQuery(r.Context(), &pd); err != nil {
 		// User-supplied filter problems (bad severity, date, limit, …) are
 		// the client's fault; anything else is a server-side failure.
@@ -290,6 +296,9 @@ func (s *Server) runQuery(ctx context.Context, pd *pageData) error {
 		if n == 0 {
 			return fmt.Errorf("validation: unknown severity %q (expected DEBUG, INFO, WARN, ERROR, or FATAL)", pd.Severity)
 		}
+		// Canonicalize so the form dropdown reflects the active filter even
+		// when the user typed a lowercase severity in the URL.
+		pd.Severity = strings.ToUpper(pd.Severity)
 		exprs = append(exprs, dsl.BinaryExpr{
 			Op:    dsl.OpGte,
 			Field: "severity_number",
@@ -367,6 +376,8 @@ func (s *Server) runQuery(ctx context.Context, pd *pageData) error {
 		rows = rows[:q.Limit]
 	}
 	pd.HasPrev = pd.Offset > 0
+	pd.PrevOffset = max(pd.Offset-pd.Limit, 0)
+	pd.NextOffset = pd.Offset + pd.Limit
 	pd.Logs = rows
 	return nil
 }
@@ -447,8 +458,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // ============================================================================
 
 // pageDataFromForm builds pageData from an HTTP GET query string, preserving
-// all filter values so they can be re-rendered in the form.
-func pageDataFromForm(r *http.Request) pageData {
+// all filter values so they can be re-rendered in the form. Unparseable or
+// out-of-range limit/offset values are rejected instead of being silently
+// ignored (which would disagree with the documented 400-on-invalid behavior).
+func pageDataFromForm(r *http.Request) (pageData, error) {
 	_ = r.ParseForm()
 	pd := pageData{
 		Service:  strings.TrimSpace(r.FormValue("service_name")),
@@ -464,16 +477,22 @@ func pageDataFromForm(r *http.Request) pageData {
 		Offset:   0,
 	}
 	if v := r.FormValue("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > dsl.MaxLimit {
+			return pageData{}, fmt.Errorf("limit must be an integer between 1 and %d, or 0 for the default", dsl.MaxLimit)
+		}
+		if n > 0 {
 			pd.Limit = n
 		}
 	}
 	if v := r.FormValue("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			pd.Offset = n
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return pageData{}, errors.New("offset must be a non-negative integer")
 		}
+		pd.Offset = n
 	}
-	return pd
+	return pd, nil
 }
 
 // parseDateTime parses a date or datetime string from the HTML form and returns

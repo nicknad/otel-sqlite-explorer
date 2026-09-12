@@ -514,7 +514,33 @@ func TestE2E_PaginationLastPageHasNoNext(t *testing.T) {
 func TestE2E_InvalidLimit(t *testing.T) {
 	h := newE2EHarness(t, false)
 	resp := h.get(t, "/logs?limit=notanumber")
+	assertStatus(t, resp, 400)
+	assertBodyContains(t, resp, "limit must be")
+}
+
+func TestE2E_InvalidOffset(t *testing.T) {
+	h := newE2EHarness(t, false)
+	for _, v := range []string{"abc", "-5"} {
+		resp := h.get(t, "/logs?offset="+url.QueryEscape(v))
+		assertStatus(t, resp, 400)
+		assertBodyContains(t, resp, "offset must be")
+	}
+}
+
+func TestE2E_SeverityIsCanonicalized(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.get(t, "/logs?since=87600h&severity=error")
 	assertStatus(t, resp, 200)
+	assertBodyContains(t, resp, `<option value="ERROR" selected>`)
+}
+
+func TestE2E_PrevOffsetIsClamped(t *testing.T) {
+	h := newE2EHarness(t, false)
+	// offset=1 with limit=2 would otherwise submit offset=-1 from the Prev
+	// button; it must be clamped to 0.
+	resp := h.get(t, "/logs?since=87600h&limit=2&offset=1")
+	assertStatus(t, resp, 200)
+	assertBodyContains(t, resp, `name="offset" value="0"`)
 }
 
 // ==========================================================================

@@ -99,10 +99,10 @@
 
     <!-- Pagination — submits the same form with a modified offset. -->
     <div id="pager" class="pager">
-      <button type="submit" form="log-form" name="offset" value="{{sub .Offset .Limit}}" class="secondary" {{if not
+      <button type="submit" form="log-form" name="offset" value="{{.PrevOffset}}" class="secondary" {{if not
         .HasPrev}}disabled{{end}}>◀ Prev</button>
       <span>showing {{len .Logs}} rows from offset {{.Offset}}</span>
-      <button type="submit" form="log-form" name="offset" value="{{add .Offset .Limit}}" class="secondary" {{if not
+      <button type="submit" form="log-form" name="offset" value="{{.NextOffset}}" class="secondary" {{if not
         .HasNext}}disabled{{end}}>Next ▶</button>
     </div>
   </div>
