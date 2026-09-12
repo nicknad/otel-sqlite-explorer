@@ -5,6 +5,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -128,7 +129,7 @@ type pageData struct {
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	pd := pageDataFromForm(r)
-	if err := s.runQuery(&pd); err != nil {
+	if err := s.runQuery(r.Context(), &pd); err != nil {
 		// User-supplied filter problems (bad severity, date, limit, …) are
 		// the client's fault; anything else is a server-side failure.
 		// The message is template-escaped on render, so echoing the input
@@ -171,7 +172,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("validation: %v", err), http.StatusBadRequest)
 		return
 	}
-	rows, err := s.executeQuery(&q)
+	rows, err := s.executeQuery(r.Context(), &q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -226,7 +227,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cq := compiler.CompileGetByID(id)
-	rows, err := s.db.Execute(cq)
+	rows, err := s.db.ExecuteContext(r.Context(), cq)
 	if err != nil {
 		log.Printf("detail query error: %v", err)
 		s.renderError(w, http.StatusInternalServerError, "Internal error")
@@ -253,7 +254,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 // runQuery builds a DSL query from the page data, executes it, and fills in
 // pd.Logs plus pagination flags (HasPrev / HasNext). It queries limit+1 rows
 // to detect whether a next page exists.
-func (s *Server) runQuery(pd *pageData) error {
+func (s *Server) runQuery(ctx context.Context, pd *pageData) error {
 	pd.HasFTS = s.db.HasFTS()
 	var exprs []dsl.Expr
 	if pd.Service != "" {
@@ -327,7 +328,7 @@ func (s *Server) runQuery(pd *pageData) error {
 	// (idempotent) fallback/normalize on the probe copy.
 	probe := q
 	probe.Limit = min(q.Limit+1, dsl.MaxLimit+1)
-	rows, err := s.executeQuery(&probe)
+	rows, err := s.executeQuery(ctx, &probe)
 	if err != nil {
 		return err
 	}
@@ -349,14 +350,14 @@ func (s *Server) runQuery(pd *pageData) error {
 // Execution failures are logged with their SQL and arguments server-side;
 // the returned error carries only the database message so handlers can
 // safely surface it without leaking internals.
-func (s *Server) executeQuery(q *dsl.Query) ([]db.LogRow, error) {
+func (s *Server) executeQuery(ctx context.Context, q *dsl.Query) ([]db.LogRow, error) {
 	s.rewriteMatchToContains(q)
 	dsl.Normalize(q)
 	cq, err := compiler.Compile(q)
 	if err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
-	rows, err := s.db.Execute(cq)
+	rows, err := s.db.ExecuteContext(ctx, cq)
 	if err != nil {
 		log.Printf("query execute error: %v | SQL: %s | args: %v", err, cq.SQL, cq.Args)
 		return nil, fmt.Errorf("execute: %w", err)

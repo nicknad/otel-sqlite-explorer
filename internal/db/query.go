@@ -29,10 +29,17 @@ type LogRow struct {
 // arguments: the API layer logs those server-side and returns this error to
 // the client, so echoing them here would leak internals.
 func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
+	return c.ExecuteContext(context.Background(), cq)
+}
+
+// ExecuteContext is Execute bound to the caller's context. When the HTTP
+// client disconnects, the in-flight SQLite query is canceled instead of
+// holding the single connection until the timeout expires.
+func (c *Client) ExecuteContext(ctx context.Context, cq *compiler.CompiledQuery) ([]LogRow, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	// Fail fast when the deadline has already passed (e.g. a zero/negative
