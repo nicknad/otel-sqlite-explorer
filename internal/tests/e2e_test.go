@@ -283,6 +283,25 @@ func TestE2E_HybridFTSAndStructured(t *testing.T) {
 	}
 }
 
+func TestE2E_FTSInvalidSyntaxIsBadRequest(t *testing.T) {
+	h := newE2EHarness(t, true)
+	// Common FTS5 syntax mistakes must yield a friendly 400, not a 500.
+	for _, bad := range []string{`"`, `(timeout`, `error:`, `AND`, `*`} {
+		resp := h.get(t, "/logs?since=87600h&search="+url.QueryEscape(bad))
+		assertStatus(t, resp, 400)
+		assertBodyContains(t, resp, "full-text")
+	}
+}
+
+func TestE2E_JSONFTSInvalidSyntaxIsBadRequest(t *testing.T) {
+	h := newE2EHarness(t, true)
+	resp := h.postJSON(t, "/logs/query", map[string]any{
+		"where": map[string]any{"match": "AND"},
+		"limit": 10,
+	})
+	assertStatus(t, resp, 400)
+}
+
 // ==========================================================================
 // Detail page
 // ==========================================================================

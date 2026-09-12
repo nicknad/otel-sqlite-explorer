@@ -353,6 +353,9 @@ func (s *Server) runQuery(ctx context.Context, pd *pageData) error {
 func (s *Server) executeQuery(ctx context.Context, q *dsl.Query) ([]db.LogRow, error) {
 	s.rewriteMatchToContains(q)
 	dsl.Normalize(q)
+	if err := s.validateMatches(ctx, q); err != nil {
+		return nil, err
+	}
 	cq, err := compiler.Compile(q)
 	if err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
@@ -363,6 +366,33 @@ func (s *Server) executeQuery(ctx context.Context, q *dsl.Query) ([]db.LogRow, e
 		return nil, fmt.Errorf("execute: %w", err)
 	}
 	return rows, nil
+}
+
+// validateMatches rejects invalid FTS5 syntax up front: the search box passes
+// user input straight to MATCH, and a query like `"unterminated` would
+// otherwise fail inside the main query and surface as a 500.
+func (s *Server) validateMatches(ctx context.Context, q *dsl.Query) error {
+	if !s.db.HasFTS() {
+		return nil
+	}
+	for _, m := range dsl.MatchQueries(q.Where) {
+		if err := s.db.ValidateMatch(ctx, m); err != nil {
+			return fmt.Errorf("validation: invalid full-text search %q: %s", m, cleanDBMessage(err))
+		}
+	}
+	return nil
+}
+
+// cleanDBMessage strips driver noise ("SQL logic error: " prefix and the
+// trailing "(<code>)" result code) from database errors surfaced to clients.
+func cleanDBMessage(err error) string {
+	msg := strings.TrimPrefix(err.Error(), "SQL logic error: ")
+	if i := strings.LastIndex(msg, " ("); i > 0 && strings.HasSuffix(msg, ")") {
+		if _, convErr := strconv.Atoi(msg[i+2 : len(msg)-1]); convErr == nil {
+			msg = msg[:i]
+		}
+	}
+	return msg
 }
 
 // ============================================================================

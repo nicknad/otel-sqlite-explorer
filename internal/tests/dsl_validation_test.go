@@ -150,6 +150,23 @@ func TestMatchInLogicalTreeIsAllowed(t *testing.T) {
 	}
 }
 
+func TestMatchQueriesExtractsEveryLeaf(t *testing.T) {
+	tree := dsl.LogicalExpr{
+		LogicalOp: dsl.OpAnd,
+		Left:      dsl.MatchExpr{Query: "first"},
+		Right: dsl.LogicalExpr{
+			LogicalOp: dsl.OpOr,
+			Left:      dsl.BinaryExpr{Op: dsl.OpEq, Field: "body", Value: dsl.Value{Type: dsl.ValueString, String: "x"}},
+			Right:     dsl.MatchExpr{Query: "second"},
+		},
+	}
+	got := dsl.MatchQueries(tree)
+	want := []string{"first", "second"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("expected %v, got %v", want, got)
+	}
+}
+
 func TestSinceDayAndWeekShorthandsAreAllowed(t *testing.T) {
 	for _, since := range []string{"1h", "24h", "7d", "1w", "30d"} {
 		q := dsl.Query{Since: since, Limit: 10}

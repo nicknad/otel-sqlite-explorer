@@ -171,6 +171,21 @@ func HasMatch(e Expr) bool {
 	return false
 }
 
+// MatchQueries returns every FTS5 query string in the tree, in evaluation
+// order. The API layer validates them before execution so invalid user syntax
+// is reported as a 400 rather than a 500.
+func MatchQueries(e Expr) []string {
+	var out []string
+	switch x := e.(type) {
+	case MatchExpr:
+		out = append(out, x.Query)
+	case LogicalExpr:
+		out = append(out, MatchQueries(x.Left)...)
+		out = append(out, MatchQueries(x.Right)...)
+	}
+	return out
+}
+
 // ============================================================================
 // JSON unmarshalling — supports two wire formats:
 //

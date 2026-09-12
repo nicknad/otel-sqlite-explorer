@@ -145,3 +145,21 @@ func (c *Client) Ping() error {
 	}
 	return nil
 }
+
+// ValidateMatch checks that query is valid FTS5 MATCH syntax without returning
+// log rows. A valid query with no matches is not an error. This lets the API
+// layer report bad user syntax as a 400 instead of a database failure.
+func (c *Client) ValidateMatch(ctx context.Context, query string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	var one int
+	err := c.db.QueryRowContext(ctx, "SELECT 1 FROM logs_fts WHERE logs_fts MATCH ? LIMIT 1", query).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // valid syntax, no matching rows
+	}
+	return err
+}
