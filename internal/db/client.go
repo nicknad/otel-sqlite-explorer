@@ -5,12 +5,21 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver registration
 )
+
+// requiredLogColumns lists the columns the read model (`logs` view/table)
+// must expose; query compilation and row scanning assume this exact shape.
+var requiredLogColumns = []string{
+	"id", "timestamp_ns", "severity_text", "severity_number", "service_name",
+	"trace_id", "span_id", "body", "attributes_json",
+}
 
 // DefaultQueryTimeout bounds every Execute call so a hung or oversized
 // SQLite operation cannot block the HTTP handler forever. It exceeds the
@@ -59,6 +68,13 @@ func Open(path string) (*Client, error) {
 	// Limit to 1 connection to keep things simple
 	db.SetMaxOpenConns(1)
 
+	// Reject databases without the expected read model up front: otherwise
+	// the server starts, /healthz reports healthy, and every real query fails.
+	if err := validateReadModel(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	// Detect whether an FTS5 full-text index (logs_fts) is available.
 	// When absent, MatchExpr nodes are rewritten to body substring matches
 	// by the API layer so the app keeps working on plain databases.
@@ -66,6 +82,42 @@ func Open(path string) (*Client, error) {
 	_ = db.QueryRowContext(context.Background(), "SELECT name FROM sqlite_master WHERE type='table' AND name='logs_fts' LIMIT 1").Scan(&name)
 
 	return &Client{db: db, hasFTS: name == "logs_fts", timeout: DefaultQueryTimeout}, nil
+}
+
+// validateReadModel checks that the database exposes a `logs` view/table with
+// every required column, returning a descriptive error listing what is missing.
+func validateReadModel(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "SELECT name FROM pragma_table_info('logs')")
+	if err != nil {
+		return fmt.Errorf("inspect logs read model: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	present := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("inspect logs read model: %w", err)
+		}
+		present[strings.ToLower(name)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("inspect logs read model: %w", err)
+	}
+	if len(present) == 0 {
+		return errors.New("database has no `logs` view or table; create the read model described in the README")
+	}
+
+	var missing []string
+	for _, col := range requiredLogColumns {
+		if !present[col] {
+			missing = append(missing, col)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("logs read model is missing required column(s): %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // DB returns the underlying *sql.DB for query execution.

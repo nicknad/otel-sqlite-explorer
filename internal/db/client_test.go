@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,5 +33,60 @@ func TestExecuteExpiredDeadlineFailsFast(t *testing.T) {
 func TestDefaultQueryTimeoutIsPositive(t *testing.T) {
 	if DefaultQueryTimeout <= 0 {
 		t.Errorf("DefaultQueryTimeout must be positive, got %v", DefaultQueryTimeout)
+	}
+}
+
+// TestOpenRejectsDatabaseWithoutLogs verifies a valid SQLite file that lacks
+// the `logs` read model fails at startup instead of serving 500s.
+func TestOpenRejectsDatabaseWithoutLogs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, execErr := conn.Exec("CREATE TABLE foo (x INTEGER)"); execErr != nil {
+		t.Fatalf("create table: %v", execErr)
+	}
+	_ = conn.Close()
+
+	client, err := Open(path)
+	if err == nil {
+		_ = client.Close()
+		t.Fatal("expected Open to reject a database without the logs read model")
+	}
+	if !strings.Contains(err.Error(), "logs") {
+		t.Errorf("error should mention the logs read model: %v", err)
+	}
+}
+
+// TestOpenRejectsIncompleteLogsReadModel verifies the startup check names the
+// missing columns so schema drift is obvious.
+func TestOpenRejectsIncompleteLogsReadModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "partial.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, execErr := conn.Exec(`CREATE TABLE logs (
+		id INTEGER,
+		timestamp_ns INTEGER,
+		severity_text TEXT,
+		severity_number INTEGER,
+		service_name TEXT,
+		trace_id BLOB,
+		span_id BLOB,
+		body TEXT
+	)`); execErr != nil {
+		t.Fatalf("create partial logs table: %v", execErr)
+	}
+	_ = conn.Close()
+
+	client, err := Open(path)
+	if err == nil {
+		_ = client.Close()
+		t.Fatal("expected Open to reject an incomplete logs read model")
+	}
+	if !strings.Contains(err.Error(), "attributes_json") {
+		t.Errorf("error should name the missing column: %v", err)
 	}
 }
