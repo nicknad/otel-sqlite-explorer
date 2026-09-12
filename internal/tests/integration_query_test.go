@@ -372,3 +372,67 @@ func TestIntegrationFTSFallbackWithoutIndex(t *testing.T) {
 		t.Fatalf("fallback substring match failed, got %d rows: %+v", len(results), results)
 	}
 }
+
+// TestIntegrationComparisonOperators exercises every comparison operator
+// end-to-end against the 5-row fixture (2x ERROR/17, WARN/13, INFO/9, DEBUG/5).
+func TestIntegrationComparisonOperators(t *testing.T) {
+	path := setupTestDB(t)
+	defer func() { _ = os.Remove(path) }()
+
+	client, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("db open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	run := func(where dsl.Expr) int {
+		t.Helper()
+		q := dsl.Query{Where: where, Limit: 100}
+		if err := dsl.Validate(&q); err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		dsl.Normalize(&q)
+		cq, err := compiler.Compile(&q)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		rows, err := client.Execute(cq)
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		return len(rows)
+	}
+
+	intVal := func(n int64) dsl.Value { return dsl.Value{Type: dsl.ValueInt, Int: n} }
+	cases := []struct {
+		name  string
+		where dsl.Expr
+		want  int
+	}{
+		{"ne", dsl.BinaryExpr{Op: dsl.OpNe, Field: "severity", Value: dsl.Value{Type: dsl.ValueString, String: "ERROR"}}, 3},
+		{"gt", dsl.BinaryExpr{Op: dsl.OpGt, Field: "severity_number", Value: intVal(9)}, 3},
+		{"gte", dsl.BinaryExpr{Op: dsl.OpGte, Field: "severity_number", Value: intVal(17)}, 2},
+		{"lt", dsl.BinaryExpr{Op: dsl.OpLt, Field: "severity_number", Value: intVal(9)}, 1},
+		{"lte", dsl.BinaryExpr{Op: dsl.OpLte, Field: "severity_number", Value: intVal(9)}, 2},
+		{"between", dsl.BinaryExpr{
+			Op:    dsl.OpBetween,
+			Field: "severity_number",
+			Value: dsl.Value{Min: new(intVal(9)), Max: new(intVal(13))},
+		}, 2},
+		{"in", dsl.BinaryExpr{
+			Op:    dsl.OpIn,
+			Field: "service_name",
+			Value: dsl.Value{List: []dsl.Value{{Type: dsl.ValueString, String: "auth-svc"}}},
+		}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := run(tc.where); got != tc.want {
+				t.Errorf("got %d rows, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+//go:fix inline
+func ptr(v dsl.Value) *dsl.Value { return new(v) }

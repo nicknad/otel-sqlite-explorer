@@ -35,9 +35,13 @@ type e2eHarness struct {
 func newE2EHarness(t *testing.T, withFTS bool) *e2eHarness {
 	t.Helper()
 
-	path := setupTestDB(t)
+	// setupTestDBWithFTS seeds the base database itself; avoid creating and
+	// leaking a second temp file when the FTS variant is requested.
+	var path string
 	if withFTS {
 		path = setupTestDBWithFTS(t)
+	} else {
+		path = setupTestDB(t)
 	}
 
 	client, err := db.Open(path)
@@ -490,21 +494,51 @@ func TestE2E_PaginationFirstPage(t *testing.T) {
 	h := newE2EHarness(t, false)
 	resp := h.get(t, "/logs?since=87600h&limit=2&offset=0")
 	assertStatus(t, resp, 200)
-	assertBodyContains(t, resp, "Next")
+	body := readBody(t, resp)
+	if buttonDisabled(t, body, "Next ▶") {
+		t.Error("Next should be enabled on the first page")
+	}
+	if !buttonDisabled(t, body, "◀ Prev") {
+		t.Error("Prev should be disabled on the first page")
+	}
 }
 
 func TestE2E_PaginationSecondPage(t *testing.T) {
 	h := newE2EHarness(t, false)
 	resp := h.get(t, "/logs?since=87600h&limit=2&offset=2")
 	assertStatus(t, resp, 200)
-	assertBodyContains(t, resp, "Prev")
+	body := readBody(t, resp)
+	if buttonDisabled(t, body, "◀ Prev") {
+		t.Error("Prev should be enabled on the second page")
+	}
+	if buttonDisabled(t, body, "Next ▶") {
+		t.Error("Next should be enabled with 5 rows and limit=2")
+	}
 }
 
 func TestE2E_PaginationLastPageHasNoNext(t *testing.T) {
 	h := newE2EHarness(t, false)
 	resp := h.get(t, "/logs?since=87600h&limit=100&offset=0")
 	assertStatus(t, resp, 200)
-	assertBodyContains(t, resp, "disabled")
+	body := readBody(t, resp)
+	if !buttonDisabled(t, body, "Next ▶") {
+		t.Error("Next should be disabled when all rows fit on one page")
+	}
+}
+
+// buttonDisabled reports whether the submit button whose text starts with the
+// given label is rendered with the disabled attribute.
+func buttonDisabled(t *testing.T, body, label string) bool {
+	t.Helper()
+	idx := strings.Index(body, ">"+label)
+	if idx < 0 {
+		t.Fatalf("button with label %q not found", label)
+	}
+	start := strings.LastIndex(body[:idx], "<button")
+	if start < 0 {
+		t.Fatalf("opening tag for button %q not found", label)
+	}
+	return strings.Contains(body[start:idx], "disabled")
 }
 
 // ==========================================================================

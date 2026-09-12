@@ -259,6 +259,31 @@ func TestSortUnknownFieldIsRejected(t *testing.T) {
 	}
 }
 
+func TestVerboseWireFormat(t *testing.T) {
+	// Legacy verbose form: typed expr objects instead of single-key shorthand.
+	input := `{
+		"where": {
+			"type": "logical",
+			"logical_op": "and",
+			"exprs": [
+				{"type": "binary", "op": "eq", "field": "severity", "value": {"type": "string", "string": "ERROR"}},
+				{"type": "match", "query": "timeout"}
+			]
+		},
+		"limit": 10
+	}`
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(input), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if !dsl.HasMatch(q.Where) {
+		t.Error("expected verbose tree to contain a match expression")
+	}
+}
+
 func TestNumericShorthandComparison(t *testing.T) {
 	// JSON numbers (not strings) must work as comparison values.
 	var q dsl.Query
