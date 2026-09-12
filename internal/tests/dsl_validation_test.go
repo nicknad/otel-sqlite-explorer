@@ -215,6 +215,23 @@ func TestUnknownTopLevelFieldIsRejected(t *testing.T) {
 	}
 }
 
+func TestWhereNullIsTreatedAsAbsent(t *testing.T) {
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(`{"where": null, "limit": 10}`), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if q.Where != nil {
+		t.Errorf("expected nil where for JSON null, got %T", q.Where)
+	}
+}
+
+func TestSortUnknownFieldIsRejected(t *testing.T) {
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(`{"sort": [{"field": "timestamp", "bogus": 1}], "limit": 10}`), &q); err == nil {
+		t.Fatal("expected error for unknown sort key, got nil")
+	}
+}
+
 func TestNumericShorthandComparison(t *testing.T) {
 	// JSON numbers (not strings) must work as comparison values.
 	var q dsl.Query

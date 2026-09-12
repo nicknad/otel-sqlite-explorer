@@ -65,6 +65,15 @@ type Value struct {
 	Max    *Value    `json:"max,omitempty"`  // for BETWEEN
 }
 
+// UnmarshalJSON decodes a verbose-format Value, rejecting unknown keys so
+// typos fail loudly instead of being silently ignored.
+func (v *Value) UnmarshalJSON(data []byte) error {
+	type valueAlias Value
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode((*valueAlias)(v))
+}
+
 // ============================================================================
 // Expression tree
 // ============================================================================
@@ -262,13 +271,15 @@ func (q *Query) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if sortRaw, ok := raw["sort"]; ok {
-		if err := json.Unmarshal(sortRaw, &q.Sort); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(sortRaw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&q.Sort); err != nil {
 			return fmt.Errorf("sort: %w", err)
 		}
 	}
 
-	// Parse the where clause.
-	if whereRaw, ok := raw["where"]; ok && len(whereRaw) > 0 {
+	// Parse the where clause. An explicit null is treated as "no filter".
+	if whereRaw, ok := raw["where"]; ok && !bytes.Equal(bytes.TrimSpace(whereRaw), []byte("null")) {
 		expr, err := unmarshalExpr(whereRaw)
 		if err != nil {
 			return fmt.Errorf("where: %w", err)
@@ -289,7 +300,9 @@ func unmarshalExpr(data json.RawMessage) (Expr, error) {
 
 	// Fall back to verbose format.
 	var ve exprJSON
-	if err := json.Unmarshal(data, &ve); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&ve); err != nil {
 		return nil, fmt.Errorf("invalid expression: %s", string(data))
 	}
 	return exprFromVerbose(&ve)

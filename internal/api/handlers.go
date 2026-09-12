@@ -7,10 +7,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"math"
+	"mime"
 	"net/http"
 	"slices"
 	"strconv"
@@ -162,15 +165,27 @@ func isValidationError(err error) bool {
 // ============================================================================
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
-	if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+	mediaType, _, mediaErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaErr != nil || mediaType != "application/json" {
 		http.Error(w, "expected Content-Type: application/json", http.StatusUnsupportedMediaType)
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxQueryBodyBytes)
 	var q dsl.Query
-	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&q); err != nil {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+	// Exactly one JSON value: trailing data (e.g. `{...} extra`) must fail
+	// loudly rather than being silently ignored.
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON: unexpected data after query object", http.StatusBadRequest)
 		return
 	}
 	if err := dsl.Validate(&q); err != nil {
@@ -179,7 +194,12 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.executeQuery(r.Context(), &q)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if isValidationError(err) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.Printf("JSON query error: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 	accept := r.Header.Get("Accept")

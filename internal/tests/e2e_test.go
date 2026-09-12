@@ -109,6 +109,16 @@ func (h *e2eHarness) postJSON(t *testing.T, path string, payload any) *http.Resp
 	return resp
 }
 
+// postRaw posts a raw body with an explicit content type.
+func (h *e2eHarness) postRaw(t *testing.T, path, contentType, payload string) *http.Response {
+	t.Helper()
+	resp, err := h.server.Client().Post(h.server.URL+path, contentType, strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
 func assertStatus(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
 	if resp.StatusCode != want {
@@ -885,5 +895,30 @@ func TestE2E_JSONBodyTooLargeIsRejected(t *testing.T) {
 		"where": map[string]any{"contains": []any{"body", strings.Repeat("a", 2<<20)}},
 		"limit": 10,
 	})
+	assertStatus(t, resp, 413)
+}
+
+func TestE2E_JSONTrailingDataIsRejected(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.postRaw(t, "/logs/query", "application/json", `{"limit":1} trailing`)
 	assertStatus(t, resp, 400)
+}
+
+func TestE2E_JSONUnknownSortFieldIsRejected(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.postRaw(t, "/logs/query", "application/json",
+		`{"sort":[{"field":"timestamp","desc":true,"typo":1}],"limit":1}`)
+	assertStatus(t, resp, 400)
+}
+
+func TestE2E_JSONNullWhereIsAccepted(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.postRaw(t, "/logs/query", "application/json", `{"where":null,"limit":1}`)
+	assertStatus(t, resp, 200)
+}
+
+func TestE2E_JSONContentTypeMustBeExact(t *testing.T) {
+	h := newE2EHarness(t, false)
+	resp := h.postRaw(t, "/logs/query", "text/application/json", `{"limit":1}`)
+	assertStatus(t, resp, 415)
 }
