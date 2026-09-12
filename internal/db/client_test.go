@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,5 +89,66 @@ func TestOpenRejectsIncompleteLogsReadModel(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "attributes_json") {
 		t.Errorf("error should name the missing column: %v", err)
+	}
+}
+
+// TestOpenPathWithURISpecialCharacters verifies a path containing characters
+// reserved in SQLite URIs ('#', spaces) opens the intended file, stays
+// read-only, and does not create a file at the truncated path.
+func TestOpenPathWithURISpecialCharacters(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.db")
+
+	conn, err := sql.Open("sqlite", base)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, execErr := conn.Exec(`CREATE TABLE logs (
+		id INTEGER,
+		timestamp_ns INTEGER,
+		severity_text TEXT,
+		severity_number INTEGER,
+		service_name TEXT,
+		trace_id BLOB,
+		span_id BLOB,
+		body TEXT,
+		attributes_json TEXT
+	)`); execErr != nil {
+		t.Fatalf("create logs table: %v", execErr)
+	}
+	if _, execErr := conn.Exec(
+		`INSERT INTO logs VALUES (1, 1, 'ERROR', 17, 'svc', NULL, 'boom', '{}')`,
+	); execErr != nil {
+		t.Fatalf("insert row: %v", execErr)
+	}
+	_ = conn.Close()
+
+	weird := filepath.Join(dir, "we#ird name.db")
+	if renameErr := os.Rename(base, weird); renameErr != nil {
+		t.Fatalf("rename to special path: %v", renameErr)
+	}
+
+	client, err := Open(weird)
+	if err != nil {
+		t.Fatalf("open special path: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	rows, err := client.Execute(compiler.CompileGetByID(1))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Body != "boom" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+
+	// The old DSN parser truncated at '#', creating a stray "we" database.
+	if _, statErr := os.Stat(filepath.Join(dir, "we")); !os.IsNotExist(statErr) {
+		t.Errorf("a truncated database file was created next to the real one")
+	}
+
+	// mode=ro must still be in force for the escaped path.
+	if _, execErr := client.DB().Exec("CREATE TABLE should_fail (x INTEGER)"); execErr == nil {
+		t.Error("expected write to be rejected on a read-only connection")
 	}
 }

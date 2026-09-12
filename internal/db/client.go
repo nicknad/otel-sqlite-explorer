@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -37,29 +39,22 @@ type Client struct {
 
 // Open opens a read-only connection to the SQLite database at path.
 // The connection is configured for read-only mode, shared cache, and
-// WAL safety.
+// WAL safety; the pragmas are part of the DSN so they apply to every
+// pooled connection, not just the one open executes them on.
 func Open(path string) (*Client, error) {
-	// URI format for modernc.org/sqlite
-	dsn := fmt.Sprintf("file:%s?mode=ro&cache=shared", path)
+	// Escape URI-reserved characters (?, #, %, spaces) in the path. Without
+	// this, a '#' starts a URI fragment: the filename is truncated and the
+	// mode=ro parameter is dropped, silently opening the wrong file
+	// read-write.
+	escapedPath := (&url.URL{Path: filepath.ToSlash(path)}).EscapedPath()
+	dsn := "file:" + escapedPath + "?mode=ro&cache=shared&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db open: %w", err)
 	}
 
-	// Safety and read-only pragmas
-	pragmas := []string{
-		"PRAGMA query_only = ON",
-		"PRAGMA busy_timeout = 5000",
-	}
-	for _, p := range pragmas {
-		if _, err := db.ExecContext(context.Background(), p); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("%s: %w", p, err)
-		}
-	}
-
-	// Test the connection
+	// Test the connection; this also applies the DSN pragmas.
 	if err := db.PingContext(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("db ping: %w", err)
