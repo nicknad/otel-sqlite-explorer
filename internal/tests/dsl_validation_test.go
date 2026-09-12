@@ -2,6 +2,7 @@ package tests
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -65,15 +66,14 @@ func TestMaxLimitIsAllowed(t *testing.T) {
 }
 
 func TestDeeplyNestedExpressionIsRejected(t *testing.T) {
-	// Build a chain of AND nodes with depth 11 (max allowed is 10).
+	// Build a chain of AND nodes one level deeper than allowed.
 	leaf := dsl.BinaryExpr{
 		Op:    dsl.OpEq,
 		Field: "severity",
 		Value: dsl.Value{Type: dsl.ValueString, String: "ERROR"},
 	}
-	// Nest it 10 levels deep → depth = 11 (> MaxExprDepth=10)
 	current := dsl.Expr(leaf)
-	for range 10 {
+	for range dsl.MaxExprDepth {
 		current = dsl.LogicalExpr{
 			LogicalOp: dsl.OpAnd,
 			Left:      current,
@@ -84,6 +84,24 @@ func TestDeeplyNestedExpressionIsRejected(t *testing.T) {
 	q := dsl.Query{Where: current, Limit: 100}
 	if err := dsl.Validate(&q); err == nil {
 		t.Fatal("expected error for deeply nested expression, got nil")
+	}
+}
+
+func TestFlatNaryAndIsAccepted(t *testing.T) {
+	// A flat and-list folds into a left-deep tree; a form with a dozen
+	// filters must not trip the nesting limit.
+	children := make([]string, 20)
+	for i := range children {
+		children[i] = fmt.Sprintf(`{"eq": ["body", "v%d"]}`, i)
+	}
+	payload := fmt.Sprintf(`{"where": {"and": [%s]}, "limit": 10}`, strings.Join(children, ","))
+
+	var q dsl.Query
+	if err := json.Unmarshal([]byte(payload), &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("flat 20-child and should be accepted: %v", err)
 	}
 }
 
@@ -103,6 +121,15 @@ func TestSelectUnknownFieldIsRejected(t *testing.T) {
 	}
 	if err := dsl.Validate(&q); err == nil {
 		t.Fatal("expected error for unknown select field, got nil")
+	}
+}
+
+func TestSelectStarMixedWithFieldsIsAllowed(t *testing.T) {
+	// The compiler expands any "*" element to the full column set; the
+	// validator must not reject the mixture.
+	q := dsl.Query{Select: "*,body", Limit: 100}
+	if err := dsl.Validate(&q); err != nil {
+		t.Fatalf("expected no error for mixed select, got: %v", err)
 	}
 }
 

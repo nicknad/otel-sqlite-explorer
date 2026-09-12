@@ -8,7 +8,7 @@ import (
 
 const (
 	MaxLimit     = 1000
-	MaxExprDepth = 10
+	MaxExprDepth = 100
 	DefaultLimit = 100
 	// MaxInValues bounds IN lists so a single query cannot exceed SQLite's
 	// variable limit or blow up planning time.
@@ -23,7 +23,7 @@ func Validate(q *Query) error {
 	if sel != "" && sel != "*" {
 		for f := range strings.SplitSeq(sel, ",") {
 			f = strings.TrimSpace(f)
-			if f == "" {
+			if f == "" || f == "*" {
 				continue
 			}
 			if !AllowedFields[f] {
