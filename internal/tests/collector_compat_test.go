@@ -13,94 +13,131 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// collectorDDL mirrors the refactored otel-sqlite collector schema (000 +
-// 003 + 004): superset logs view (18 cols), 6-column contentless logs_fts
-// with maintenance triggers, composite hot-path indexes, and the extra
-// scope/metric tables the explorer must ignore. The explorer only SELECTs
-// its 9-column subset, so this must keep working without code changes.
+// collectorDDL mirrors the current otel-sqlite sink baseline (006, squashed
+// logs-only), regenerated 2026-11-19 from the database produced by
+// ghcr.io/nicknad/otel-sqlite:latest (image digest sha256:f8e5bbe2f7fa, see
+// internal/tests/sink_image_test.go): a 20-column superset logs view, a
+// body-only contentless logs_fts with (rowid, body) maintenance triggers,
+// stamped migrations 000-006, and search_index_state at body/ready. The
+// explorer only SELECTs its 9-column subset, so this must keep working
+// without code changes.
 const collectorDDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version TEXT PRIMARY KEY,
-    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE schema_migrations (
+    version     TEXT PRIMARY KEY,
+    applied_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     description TEXT
 );
-CREATE TABLE IF NOT EXISTS log_resource (
-    id TEXT PRIMARY KEY,
-    service_name TEXT NOT NULL,
-    host_name TEXT,
-    schema_url TEXT,
+INSERT INTO schema_migrations (version, description) VALUES
+    ('000','Satisfied by squashed logs-only baseline'),
+    ('001','Satisfied by squashed logs-only baseline'),
+    ('002','Satisfied by squashed logs-only baseline'),
+    ('003','Satisfied by squashed logs-only baseline'),
+    ('004','Satisfied by squashed logs-only baseline'),
+    ('005','Satisfied by squashed logs-only baseline'),
+    ('006','Satisfied by squashed logs-only baseline');
+CREATE TABLE log_resource (
+    id              TEXT PRIMARY KEY,
+    service_name    TEXT NOT NULL,
+    host_name       TEXT,
+    schema_url      TEXT,
     attributes_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_log_resource_service ON log_resource(service_name);
-CREATE TABLE IF NOT EXISTS log_event (
-    id INTEGER PRIMARY KEY,
-    resource_id TEXT NOT NULL,
-    timestamp_ns INTEGER NOT NULL,
-    observed_timestamp_ns INTEGER NOT NULL,
-    severity_number INTEGER NOT NULL,
-    severity_text TEXT,
-    trace_id BLOB,
-    span_id BLOB,
-    body TEXT,
-    event_name TEXT,
-    flags INTEGER NOT NULL DEFAULT 0,
+CREATE INDEX idx_log_resource_service ON log_resource(service_name);
+CREATE TABLE log_event (
+    id                       INTEGER PRIMARY KEY,
+    resource_id              TEXT NOT NULL,
+    timestamp_ns             INTEGER NOT NULL,
+    observed_timestamp_ns    INTEGER NOT NULL,
+    severity_number          INTEGER NOT NULL,
+    severity_text            TEXT,
+    trace_id                 BLOB,
+    span_id                  BLOB,
+    body                     TEXT,
+    event_name               TEXT,
+    flags                    INTEGER NOT NULL DEFAULT 0,
     dropped_attributes_count INTEGER NOT NULL DEFAULT 0,
-    scope_name TEXT,
-    scope_version TEXT,
-    scope_attributes_json TEXT NOT NULL DEFAULT '{}',
-    scope_schema_url TEXT,
-    attributes_json TEXT NOT NULL DEFAULT '{}',
-    FOREIGN KEY (resource_id) REFERENCES log_resource(id) ON DELETE CASCADE
+    scope_name               TEXT,
+    scope_version            TEXT,
+    attributes_json          TEXT NOT NULL DEFAULT '{}',
+    scope_attributes_json    TEXT NOT NULL DEFAULT '{}',
+    scope_schema_url         TEXT,
+    FOREIGN KEY (resource_id)
+        REFERENCES log_resource(id)
+        ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_log_event_timestamp ON log_event(timestamp_ns);
-CREATE INDEX IF NOT EXISTS idx_log_event_resource_timestamp ON log_event(resource_id, timestamp_ns);
-CREATE INDEX IF NOT EXISTS idx_log_event_trace_timestamp ON log_event(trace_id, timestamp_ns) WHERE trace_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_log_event_sev ON log_event(severity_number);
-CREATE VIEW IF NOT EXISTS logs AS
-SELECT le.id, le.resource_id, le.timestamp_ns, le.observed_timestamp_ns,
-    le.severity_number, le.severity_text, le.trace_id, le.span_id,
-    le.body, le.event_name, le.flags, le.dropped_attributes_count,
-    le.scope_name, le.scope_version, le.scope_attributes_json, le.scope_schema_url,
-    le.attributes_json, lr.service_name, lr.host_name, lr.schema_url AS resource_schema_url
-FROM log_event AS le JOIN log_resource AS lr ON lr.id = le.resource_id;
-CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
-    body, service_name, host_name, severity_text, event_name, scope_name,
-    tokenize='unicode61 remove_diacritics 2', content='', contentless_delete=1
+CREATE INDEX idx_log_event_timestamp ON log_event(timestamp_ns);
+CREATE INDEX idx_log_event_resource_timestamp
+    ON log_event(resource_id, timestamp_ns);
+CREATE INDEX idx_log_event_trace_timestamp
+    ON log_event(trace_id, timestamp_ns)
+    WHERE trace_id IS NOT NULL;
+CREATE VIEW logs AS
+SELECT
+    le.id                       AS id,
+    le.resource_id              AS resource_id,
+    le.timestamp_ns             AS timestamp_ns,
+    le.observed_timestamp_ns    AS observed_timestamp_ns,
+    le.severity_number          AS severity_number,
+    le.severity_text            AS severity_text,
+    le.trace_id                 AS trace_id,
+    le.span_id                  AS span_id,
+    le.body                     AS body,
+    le.event_name               AS event_name,
+    le.flags                    AS flags,
+    le.dropped_attributes_count AS dropped_attributes_count,
+    le.scope_name               AS scope_name,
+    le.scope_version            AS scope_version,
+    le.scope_attributes_json    AS scope_attributes_json,
+    le.scope_schema_url         AS scope_schema_url,
+    le.attributes_json          AS attributes_json,
+    lr.service_name             AS service_name,
+    lr.host_name                AS host_name,
+    lr.schema_url               AS resource_schema_url
+FROM log_event AS le
+JOIN log_resource AS lr
+    ON lr.id = le.resource_id;
+CREATE VIRTUAL TABLE logs_fts USING fts5(
+    body,
+    tokenize = 'unicode61 remove_diacritics 2',
+    content = '',
+    contentless_delete = 1
 );
 CREATE TRIGGER logs_fts_ai AFTER INSERT ON log_event BEGIN
-    INSERT INTO logs_fts(rowid,body,service_name,host_name,severity_text,event_name,scope_name)
-    SELECT new.id, COALESCE(new.body,''), COALESCE(lr.service_name,''),
-        COALESCE(lr.host_name,''), COALESCE(new.severity_text,''),
-        COALESCE(new.event_name,''), COALESCE(new.scope_name,'')
-    FROM log_resource AS lr WHERE lr.id=new.resource_id;
+    INSERT INTO logs_fts (rowid, body)
+    VALUES (new.id, COALESCE(new.body, ''));
 END;
 CREATE TRIGGER logs_fts_ad AFTER DELETE ON log_event BEGIN
-    DELETE FROM logs_fts WHERE rowid=old.id;
+    DELETE FROM logs_fts WHERE rowid = old.id;
 END;
-CREATE TABLE IF NOT EXISTS scope (
-    id TEXT PRIMARY KEY,
-    resource_id TEXT NOT NULL,
-    name TEXT, version TEXT, schema_url TEXT,
-    attributes_json TEXT NOT NULL DEFAULT '{}',
-    FOREIGN KEY (resource_id) REFERENCES log_resource(id) ON DELETE CASCADE,
-    UNIQUE(resource_id, name, version, schema_url)
+CREATE TABLE search_index_state (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    mode          TEXT    NOT NULL CHECK (mode IN ('off', 'body', 'full')),
+    status        TEXT    NOT NULL CHECK (status IN ('ready', 'rebuilding')),
+    last_rowid    INTEGER NOT NULL DEFAULT 0,
+    rebuild_until INTEGER,
+    updated_at    TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (
+        (mode = 'off'
+            AND status = 'ready'
+            AND last_rowid = 0
+            AND rebuild_until IS NULL)
+        OR
+        (mode <> 'off'
+            AND (
+                (status = 'ready' AND rebuild_until IS NULL)
+                OR
+                (status = 'rebuilding'
+                    AND rebuild_until IS NOT NULL
+                    AND rebuild_until >= last_rowid)
+            ))
+    )
 );
-CREATE TABLE IF NOT EXISTS metric (
-    id TEXT PRIMARY KEY,
-    scope_id TEXT NOT NULL,
-    name TEXT NOT NULL, description TEXT, unit TEXT,
-    type INTEGER NOT NULL,
-    is_monotonic INTEGER NOT NULL DEFAULT 0 CHECK(is_monotonic IN (0,1)),
-    aggregation_temporality INTEGER NOT NULL DEFAULT 0,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    FOREIGN KEY (scope_id) REFERENCES scope(id) ON DELETE CASCADE,
-    UNIQUE(scope_id, name, unit, type)
-);
+INSERT INTO search_index_state (id, mode, status, last_rowid) VALUES (1, 'body', 'ready', 0);
 `
 
-// setupCollectorDB builds a temp DB using the collector's DDL (not the
-// explorer's legacy test DDL), populates it via the collector's triggers
+// setupCollectorDB builds a temp DB using the sink's 006 DDL (not the
+// explorer's synthetic demo schema), populates it via the sink's triggers
 // (no manual FTS backfill), and returns the path.
 func setupCollectorDB(t *testing.T) string {
 	t.Helper()
@@ -157,7 +194,8 @@ func setupCollectorDB(t *testing.T) string {
 			t.Fatalf("insert log event: %v", err)
 		}
 	}
-	// Extra collector tables exist but stay empty; the explorer must ignore them.
+	// The 006 sink also stamps schema_migrations and search_index_state;
+	// the explorer must ignore everything it does not query.
 	return path
 }
 
@@ -244,7 +282,8 @@ func TestCollectorCompat_ReadPaths(t *testing.T) {
 	}
 }
 
-// FTS is trigger-maintained and 6 columns wide; the explorer's bare
+// FTS is trigger-maintained and body-only (the 006 default mode); the
+// explorer's bare
 // `logs_fts MATCH ?` + `JOIN logs.id = logs_fts.rowid` + bm25 ranking must
 // work unchanged.
 func TestCollectorCompat_FTS(t *testing.T) {
