@@ -1,10 +1,16 @@
-// Package schema provides the production DDL for the log-explorer SQLite
-// database: the normalized OTel collector layout (log_resource + log_event)
-// plus the read model's `logs` view. The mock generator and the integration
-// tests share it so both always exercise the real schema.
+// Package schema provides the synthetic demo schema used by cmd/mockdb and
+// the plain test fixtures: a minimal OTel-flavored layout (log_resource +
+// log_event) plus a 9-column `logs` view that satisfies the explorer's
+// read-model floor (requiredLogColumns in internal/db).
+//
+// This is NOT the otel-sqlite sink's schema. The live sink installs a
+// 20-column superset `logs` view, schema_migrations, search_index_state and
+// a body-only FTS5 index; that contract is documented in docs/CONTRACT.md
+// and verified against the real image by internal/tests/sink_image_test.go.
 package schema
 
-// DDL creates the production schema. It is safe to Exec as-is.
+// DDL creates the synthetic demo schema (mockdb + plain fixtures). It is
+// safe to Exec as-is.
 const DDL = `
 CREATE TABLE log_resource (
 	id TEXT PRIMARY KEY,
@@ -47,9 +53,10 @@ SELECT
 FROM log_event le
 JOIN log_resource lr ON le.resource_id = lr.id;
 
--- Indexes serving the explorer's hot paths: the logs-view JOIN plus the
--- timestamp / severity filters and default sort. Production databases owned
--- by the otel-sqlite collector should carry the same indexes.
+-- Indexes approximating the explorer's hot paths for the synthetic demo
+-- schema. The live sink's index set differs (no severity index; different
+-- names and shapes for the others) - see docs/CONTRACT.md and the
+-- sink_image_test harvest for the real shapes.
 CREATE INDEX IF NOT EXISTS idx_log_event_resource ON log_event(resource_id);
 CREATE INDEX IF NOT EXISTS idx_log_event_ts ON log_event(timestamp_ns);
 CREATE INDEX IF NOT EXISTS idx_log_event_sev ON log_event(severity_number);

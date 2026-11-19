@@ -1,7 +1,7 @@
 # Log Explorer
 
 A read-only web UI for querying OpenTelemetry logs stored in SQLite. It pairs
-with the [otel-sqlite](https://codeberg.org/nicknad/otel-sqlite) collector but works with any SQLite
+with the [otel-sqlite](https://github.com/nicknad/otel-sqlite/pkgs/container/otel-sqlite) collector but works with any SQLite
 database that exposes a `logs` view/table with the columns below.
 
 ## Features
@@ -13,12 +13,21 @@ database that exposes a `logs` view/table with the columns below.
 - **Read-only by design** — the SQLite connection opens in `mode=ro` with
   `PRAGMA query_only = ON`. The explorer never writes to the database; the
   `logs_fts` index is maintained by the write sidecar
-  ([otel-sqlite](https://codeberg.org/nicknad/otel-sqlite) collector).
+  ([otel-sqlite](https://github.com/nicknad/otel-sqlite/pkgs/container/otel-sqlite) collector).
 - **Web UI** — dark-themed, HTMX-powered table with filter form, pagination,
   and a per-log detail page showing the full OTel payload (body + attributes).
 - **JSON API** — `POST /logs/query` accepts a JSON DSL query and returns JSON
   rows for programmatic use.
 
+## Design notes
+
+- [API, database, and query](docs/API-DB-QUERY.md) — how a request crosses the
+  API, query and database layers, the lifecycle statechart, and the rules a
+  bounded model check found broken (empty-index searches, queue deadlines,
+  liveness probes behind queries).
+- [Explorer ↔ sink database contract](docs/CONTRACT.md) — the database surface
+  the explorer depends on.
+- [Coupling audit](docs/COUPLING-AUDIT.md) — where those assumptions leak.
 
 ## Quick Start
 
@@ -88,9 +97,30 @@ index at startup:
   API clients keep working.
 
 The index itself is created and kept current by the write sidecar
-([otel-sqlite](https://codeberg.org/nicknad/otel-sqlite) collector). It is
+([otel-sqlite](https://github.com/nicknad/otel-sqlite/pkgs/container/otel-sqlite) collector). It is
 detected once at startup: restart the explorer after the index is created for
 the search box to appear.
+
+## Demo data
+
+Two one-command paths produce a populated database for trying the site:
+
+| Command | What it does | Data shape |
+|---|---|---|
+| `make serve-mock` | `cmd/mockdb` writes the synthetic schema to `demo/logs.db` and serves it | Fast and offline; seeded generator, FTS on |
+| `make serve-sink-demo` | `cmd/sinkdemo` pushes real OTLP traffic through the published `otel-sqlite` sink image, harvests `demo/sink-logs.db`, and serves it | The exact production write path; needs Docker |
+
+When to use which: **synthetic** is instant and works without Docker;
+**sink-produced** is slower but proves the collector round trip on your
+machine — if the site serves that database, ingestion works end to end.
+
+- Both regenerate the database on every run, so timestamps stay recent.
+- `make sink-demo` regenerates `demo/sink-logs.db` without serving; volume
+  follows `cmd/sinkdemo -rows N`.
+- The image-backed contract test uses the same topology: `make test-image`
+  (skips without Docker; `OTEL_SQLITE_IMAGE=<ref>` pins a ref;
+  `EXPLORER_SINK_HARVEST_DUMP=<dir>` copies the verified database out for
+  inspection).
 
 ### Flags
 

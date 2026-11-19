@@ -4,6 +4,7 @@
 
 BIN     := bin/log-explorer
 MOCK_DB := demo/logs.db
+SINK_DB := demo/sink-logs.db
 ADDR    := :8080
 
 # `rm` is not available on Windows, and `del` rejects forward-slash paths, so
@@ -12,13 +13,15 @@ ifeq ($(OS),Windows_NT)
   RM      := del /q
   DELBIN  := $(subst /,\,$(BIN))
   DELMOCK := $(subst /,\,$(MOCK_DB))
+  DELSINK := $(subst /,\,$(SINK_DB))
 else
   RM      := rm -f
   DELBIN  := $(BIN)
   DELMOCK := $(MOCK_DB)
+  DELSINK := $(SINK_DB)
 endif
 
-.PHONY: all build fmt test lint vet mock-db serve-mock run-mock clean clean-mock
+.PHONY: all build fmt test lint vet mock-db serve-mock run-mock clean clean-mock test-image sink-demo serve-sink-demo clean-sink
 
 all: build
 
@@ -38,6 +41,13 @@ lint:
 vet:
 	go vet ./...
 
+# Image-backed integration tests: the read contract against a database
+# produced by the real otel-sqlite sink image (ghcr.io/nicknad/otel-sqlite).
+# Requires a Docker daemon; the tests skip themselves when none is reachable.
+# Pin or force an image with OTEL_SQLITE_IMAGE=<ref>.
+test-image:
+	go test -count=1 -v -run '^TestSinkImage' ./internal/tests
+
 # Generate the demo database used to inspect the UI with realistic data.
 mock-db:
 	go run ./cmd/mockdb -out $(MOCK_DB)
@@ -52,8 +62,23 @@ serve-mock: mock-db
 run-mock: build mock-db
 	$(BIN) -db $(MOCK_DB) -addr $(ADDR)
 
+# Generate the sink-backed demo database: real OTLP traffic pushed through
+# the published otel-sqlite sink image and harvested, the same ingestion
+# path production uses. Requires a Docker daemon; OTEL_SQLITE_IMAGE=<ref>
+# pins a different sink image.
+sink-demo:
+	go run ./cmd/sinkdemo -out $(SINK_DB)
+
+# Start the site against the sink-backed demo database (regenerated each
+# run so timestamps stay recent).
+serve-sink-demo: sink-demo
+	go run ./cmd/server -db $(SINK_DB) -addr $(ADDR)
+
 clean:
 	-$(RM) $(DELBIN)
 
 clean-mock:
 	-$(RM) $(DELMOCK)
+
+clean-sink:
+	-$(RM) $(DELSINK)
