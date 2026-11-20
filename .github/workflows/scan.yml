@@ -1,0 +1,102 @@
+# CVE drift radar: build the production image from a freshly pulled base and
+# run the release trivy gate against it - weekly, and on demand - WITHOUT
+# pushing anything.
+#
+# Purpose: release day must never be the first time trivy runs. A red weekly
+# report says "the trixie-slim tag drifted; rebuild or review" days before a
+# release is attempted. The gate settings mirror publish.yml exactly (fixable
+# HIGH|CRITICAL, ignore-unfixed, .trivyignore), so a green Monday means a
+# green release day for the base layer.
+#
+# Explorer extension: the radar also flags STALE reviewed exceptions. After
+# the gated scan, the image is scanned once more WITHOUT .trivyignore; if
+# that bare scan comes back clean, every reviewed entry is dead weight and
+# this job fails with instructions to delete it. Live example:
+# CVE-2026-85091 (zlib1g, debian:trixie-slim 13.7) - the Monday the base
+# ships deb13u1, the radar turns red and asks for the entry's removal
+# instead of letting it rot.
+
+name: CVE scan
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  scan:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Count reviewed exceptions
+        id: count
+        run: |
+          n="$(grep -cE '^[[:space:]]*CVE-[0-9]{4}-[0-9]+' .trivyignore 2>/dev/null || true)"
+          echo "entries=${n:-0}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up buildx builder
+        run: docker buildx create --use --name builder
+
+      - name: Build from a freshly pulled base
+        run: >
+          docker buildx build
+          --pull
+          --platform linux/${{ matrix.arch }}
+          --build-arg REVISION="${{ github.sha }}"
+          --cache-from type=gha --cache-to type=gha,mode=max
+          --load
+          --tag log-explorer-scan:latest .
+
+      - name: CVE gate (same rule as the release workflow)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: log-explorer-scan:latest
+          scan-type: image
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          scanners: vuln
+          trivyignores: .trivyignore
+
+      - name: Set aside .trivyignore for the bare scan
+        if: steps.count.outputs.entries != '0'
+        run: |
+          mkdir -p /tmp/trivyignore-hold
+          mv .trivyignore /tmp/trivyignore-hold/.trivyignore
+          touch .trivyignore
+
+      - name: Scan without the ignore list (are any exceptions still load-bearing?)
+        id: bare
+        if: steps.count.outputs.entries != '0'
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: log-explorer-scan:latest
+          scan-type: image
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          scanners: vuln
+
+      - name: Restore .trivyignore and flag stale entries
+        if: steps.count.outputs.entries != '0'
+        run: |
+          mv -f /tmp/trivyignore-hold/.trivyignore .trivyignore
+          if [ "${{ steps.bare.outcome }}" = "success" ]; then
+            echo "::error::bare scan is clean: every reviewed exception in .trivyignore is stale (the base image now ships the fixes). Remove the entries." >&2
+            exit 1
+          fi
+          echo "at least one reviewed exception is still load-bearing; keeping .trivyignore as-is."
