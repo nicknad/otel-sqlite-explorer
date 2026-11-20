@@ -101,7 +101,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           scanners: vuln
-          ignore: .trivyignore
+          trivyignores: .trivyignore
 
       - name: Push per-arch tag with provenance and SBOM attestations
         run: >

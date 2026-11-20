@@ -1,6 +1,14 @@
 # Trivy CVE-gate exceptions for the explorer release image.
 #
 # The release gate (publish.yml) fails on fixable HIGH|CRITICAL findings;
-# this file lists reviewed exceptions. It is empty by design: every entry
-# needs a CVE id, an expiry date, and a one-line justification, and must be
-# removed once the base image ships the fix. Mirrors otel-sqlite's gate.
+# this file lists reviewed exceptions. Mirrors otel-sqlite's gate and its
+# conventions: every entry carries its review note above it and is deleted
+# when the base image ships the fix.
+#
+# CVE-2026-85091 - zlib1g (debian:trixie-slim 13.7): heap buffer overflow in
+# gz_vacate(), arbitrary code execution. Reviewed 2026-11-20: the release
+# binary is statically linked Go with no zlib linkage and the explorer never
+# decompresses attacker-controlled data; zlib1g is present only in the base
+# distro stack. Fixed upstream as 1:1.3.dfsg+really1.3.1-1+deb13u1; remove
+# this entry once trixie-slim carries it.
+CVE-2026-85091
