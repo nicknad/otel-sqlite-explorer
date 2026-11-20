@@ -6,9 +6,11 @@
 //
 //	mockdb [-out demo/logs.db] [-rows 3000] [-seed 42] [-fts]
 //
-// The output database uses the exact production schema (log_resource +
-// log_event + logs view) and, by default, includes a contentless logs_fts
-// full-text index so the FTS search box is enabled.
+// The output database uses the synthetic demo schema from internal/schema
+// (log_resource + log_event + logs view) and, by default, a contentless
+// logs_fts full-text index maintained by the producer's trigger pair, so
+// the FTS search box is enabled with the same semantics the real sink
+// installs.
 package main
 
 import (
@@ -471,10 +473,12 @@ func main() {
 			CREATE VIRTUAL TABLE logs_fts USING fts5(
 				body,
 				service_name,
-				content=''
+				content='',
+				contentless_delete=1
 			);
 			INSERT INTO logs_fts(rowid, body, service_name)
 			SELECT id, body, service_name FROM logs;
+			`+schema.FTSTriggers+`
 		`); err != nil {
 			log.Fatalf("build fts index: %v", err)
 		}

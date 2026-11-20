@@ -1,5 +1,3 @@
-// Package db provides a read-only SQLite access layer.
-// No write operations are exposed.
 package db
 
 import (
@@ -16,7 +14,7 @@ import (
 	_ "modernc.org/sqlite" // SQLite driver registration
 )
 
-// requiredLogColumns lists the columns the read model (`logs` view/table)
+// requiredLogColumns lists the columns the read model (logs view/table)
 // must expose; query compilation and row scanning assume this exact shape.
 var requiredLogColumns = []string{
 	"id", "timestamp_ns", "severity_text", "severity_number", "service_name",
@@ -33,7 +31,7 @@ const DefaultQueryTimeout = 10 * time.Second
 type Client struct {
 	db      *sql.DB
 	mu      sync.Mutex
-	hasFTS  bool // true if a logs_fts table is present
+	search  searchCapability // classified once in Open; immutable afterwards
 	timeout time.Duration
 }
 
@@ -70,16 +68,19 @@ func Open(path string) (*Client, error) {
 		return nil, err
 	}
 
-	// Detect whether an FTS5 full-text index (logs_fts) is available.
-	// When absent, MatchExpr nodes are rewritten to body substring matches
-	// by the API layer so the app keeps working on plain databases.
-	var name string
-	_ = db.QueryRowContext(context.Background(), "SELECT name FROM sqlite_master WHERE type='table' AND name='logs_fts' LIMIT 1").Scan(&name)
+	// Classify the full-text search capability. A logs_fts table alone
+	// proves nothing - the sink leaves one behind in every search mode,
+	// including 'off', where nothing maintains it - so the capability reads
+	// what actually keeps MATCH truthful: an fts5 virtual table maintained
+	// by triggers on log_event. When it is unavailable, MatchExpr nodes are
+	// rewritten to body substring matches by the API layer so the app keeps
+	// working on plain databases.
+	capability := detectSearchCapability(context.Background(), db)
 
-	return &Client{db: db, hasFTS: name == "logs_fts", timeout: DefaultQueryTimeout}, nil
+	return &Client{db: db, search: capability, timeout: DefaultQueryTimeout}, nil
 }
 
-// validateReadModel checks that the database exposes a `logs` view/table with
+// validateReadModel checks that the database exposes a logs view/table with
 // every required column, returning a descriptive error listing what is missing.
 func validateReadModel(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, "SELECT name FROM pragma_table_info('logs')")
@@ -100,7 +101,7 @@ func validateReadModel(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("inspect logs read model: %w", err)
 	}
 	if len(present) == 0 {
-		return errors.New("database has no `logs` view or table; create the read model described in the README")
+		return errors.New("database has no logs view or table; create the read model described in the README")
 	}
 
 	var missing []string
@@ -127,9 +128,13 @@ func (c *Client) Close() error {
 	return c.db.Close()
 }
 
-// HasFTS reports whether the database exposes a logs_fts full-text index.
+// HasFTS reports whether a full-text MATCH on this database can be trusted:
+// an fts5 logs_fts virtual table kept in sync by at least one trigger on
+// log_event. It is false for the sink's search mode 'off' (the table exists
+// but nothing maintains it), for indexes that are only backfilled, and for
+// databases without usable FTS; callers fall back to substring matching.
 func (c *Client) HasFTS() bool {
-	return c.hasFTS
+	return c.search.Active()
 }
 
 // Ping verifies the database answers within a short deadline. It backs the

@@ -61,3 +61,22 @@ CREATE INDEX IF NOT EXISTS idx_log_event_resource ON log_event(resource_id);
 CREATE INDEX IF NOT EXISTS idx_log_event_ts ON log_event(timestamp_ns);
 CREATE INDEX IF NOT EXISTS idx_log_event_sev ON log_event(severity_number);
 `
+
+// FTSTriggers installs the trigger-maintained search-index contract onto
+// the synthetic demo schema: inserts and deletes on log_event flow into
+// logs_fts. The bodies match the otel-sqlite sink's canonical schema
+// (migrations/baseline_006.sql, schema 006) with IF NOT EXISTS added so
+// fixture seeding is idempotent; change both repositories together.
+//
+// internal/db classifies a database as full-text capable exactly when an
+// fts5 logs_fts exists AND at least one log_event trigger maintains it, so
+// any fixture or demo database that wants working FTS must install this
+// pair after creating a contentless logs_fts with contentless_delete=1,
+// which the delete trigger requires.
+const FTSTriggers = `CREATE TRIGGER IF NOT EXISTS logs_fts_ai AFTER INSERT ON log_event BEGIN
+    INSERT INTO logs_fts (rowid, body)
+    VALUES (new.id, COALESCE(new.body, ''));
+END;
+CREATE TRIGGER IF NOT EXISTS logs_fts_ad AFTER DELETE ON log_event BEGIN
+    DELETE FROM logs_fts WHERE rowid = old.id;
+END;`

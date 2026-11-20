@@ -120,10 +120,12 @@ func setupTestDB(t *testing.T) string {
 	return path
 }
 
-// setupTestDBWithFTS is like setupTestDB but also creates and populates a
-// contentless FTS5 index (logs_fts) over body and service_name — the same
-// shape the otel-sqlite write sidecar owns — so MatchExpr queries can be
-// exercised end-to-end without any maintenance tooling.
+// setupTestDBWithFTS is like setupTestDB but also creates a contentless
+// FTS5 index (logs_fts) over body and service_name - a deliberately
+// non-canonical column set, proving the explorer assumes no columns - and
+// installs the producer's maintenance trigger pair (schema.FTSTriggers).
+// internal/db classifies FTS as available exactly when the index is
+// trigger-maintained, so any fixture exercising MATCH must carry the pair.
 func setupTestDBWithFTS(t *testing.T) string {
 	t.Helper()
 	path := setupTestDB(t)
@@ -138,10 +140,12 @@ func setupTestDBWithFTS(t *testing.T) string {
 		CREATE VIRTUAL TABLE logs_fts USING fts5(
 			body,
 			service_name,
-			content=''
+			content='',
+			contentless_delete=1
 		);
 		INSERT INTO logs_fts(rowid, body, service_name)
 		SELECT id, body, service_name FROM logs;
+		` + schema.FTSTriggers + `
 	`); err != nil {
 		t.Fatalf("create fts index: %v", err)
 	}

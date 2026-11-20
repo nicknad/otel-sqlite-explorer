@@ -263,7 +263,7 @@ under monorepo *or* polyrepo, so the layout decision gates nothing.
 | # | Decision | Where discussed |
 |---|----------|-----------------|
 | D-1 | Compatibility policy: floor-only vs verified-current vs N-1 vs lockstep | CONTRACT §5 |
-| D-2 | FTS-off detection: trigger probe vs `search_index_state` vs both | CONTRACT §3 |
+| ~~D-2~~ | FTS-off detection — **resolved 2026-11-20: trigger-maintained fts5 is the capability; state row deferred to the UI-copy pass** | CONTRACT §3 |
 | D-3 | Fixture channel: release assets vs GHCR image vs build-from-source | §7 |
 | D-4 | Glossary mechanism: subtree vs synced copy+CI vs monorepo path | §8 |
 | ~~D-5~~ | Codeberg: archive or mirror — **resolved 2026-11-19: archive** | §9 |

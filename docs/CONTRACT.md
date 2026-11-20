@@ -104,21 +104,23 @@ Additional runtime facts:
 - UI copy must not overclaim: "words match … body & service" is true only in
   `full` mode; in the default `body` mode only the body is indexed.
 
-### Capability detection **[OPEN D-2]**
+### Capability detection — **resolved 2026-11-20**
 
-Today the explorer detects FTS by table existence (`internal/db/client.go`,
-`hasFTS`). In `off` mode the table exists but is empty, so the explorer silently
-reports FTS available and returns zero hits — a live bug against any `mode="off"`
-database. Candidate mechanisms:
+The explorer classifies full-text capability from the mechanism that keeps
+MATCH truthful: FTS is available iff `logs_fts` is an fts5 virtual table AND
+at least one trigger on `log_event` maintains it (`internal/db/fts.go`,
+detected once at startup, read-only SELECTs only). A plain (non-fts5) table
+named `logs_fts` classifies as unusable instead of failing at query time.
 
-- **(a) Trigger probe:** FTS is active iff `logs_fts` exists AND a maintenance
-  trigger referencing it exists in `sqlite_master`. Cheap; works on any DB.
-- **(b) State row:** read `search_index_state` (mode + status). Strongest signal,
-  available on 006+ sink DBs; also exposes `rebuilding` for correct UX.
-- **(c) Row-count probe:** rejected — wrong for rebuilds and empty databases.
-
-Recommended combination (see audit §10): (b) when the table exists, (a) as the
-pre-006 / foreign-database fallback. Decision stays open.
+- `off` mode (table present, empty, no triggers) → unavailable: searches take
+  the substring fallback instead of silently returning zero rows.
+- One-shot backfilled indexes (the old fixtures, mockdb) → unavailable unless
+  they install the producer trigger pair (`schema.FTSTriggers`).
+- `search_index_state` is deliberately not consulted: the triggers are the
+  mechanism and the state row is the producer's mirror of it, and the
+  structural probe must exist anyway for foreign databases. The state row
+  remains the natural source for mode-aware UI copy and rebuild status when
+  that pass lands (audit §12, D-2 follow-up).
 
 ### Fallback behavior
 
