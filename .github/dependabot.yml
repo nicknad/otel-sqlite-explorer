@@ -1,0 +1,50 @@
+# Dependabot configuration.
+#
+# Two ways Dependabot protects this repo:
+#   1. Version updates  - scheduled PRs for pinned dependencies (this file).
+#   2. Security updates - PRs when a dependency has a known advisory
+#                         (a repository setting, not configured here).
+#
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-options-reference
+version: 2
+
+updates:
+  # Go modules declared in go.mod / go.sum.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      go-modules:
+        patterns:
+          - "*"
+
+  # Actions pinned in .github/workflows (checkout, setup-go, ...).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Base images in the Dockerfile (golang builder, debian runtime).
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(docker)"
+    groups:
+      docker-images:
+        patterns:
+          - "*"
