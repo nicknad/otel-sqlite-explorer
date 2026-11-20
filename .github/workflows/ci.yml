@@ -14,7 +14,9 @@ jobs:
         with:
           go-version: "1.27"
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      # Race over everything except the Docker-backed contract tests;
+      # the image-contract arm owns those.
+      - run: go test -race -count=1 -skip 'SinkImage' ./...
 
   # The read contract is proven against a database produced by the real
   # sink image; GitHub runners have Docker, so this arm never skips. A sink

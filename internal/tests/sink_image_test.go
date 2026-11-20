@@ -158,7 +158,11 @@ func (s *sinkStack) startBridge() string {
 		"      exporters: [otlp/sqlite]\n"
 	dir := s.t.TempDir()
 	cfgPath := filepath.Join(dir, "otelcol.yaml")
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+	// Mode 0644: the collector image runs as a non-root user, so a 0600
+	// config written by the test user is unreadable inside the container on
+	// real Linux. Docker Desktop file sharing masks modes, which is why this
+	// only fails on CI runners.
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		s.t.Fatal(err)
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -208,7 +212,10 @@ func (s *sinkStack) pushLogs(baseURL, token string, records int) {
 			last = err.Error()
 		}
 		if time.Now().After(deadline) {
-			s.t.Fatalf("pushing OTLP logs through the bridge failed: %s", last)
+			// A refused connection for the whole window means the bridge
+			// died at startup; its container logs say why.
+			logs, _ := exec.Command("docker", "logs", "--tail", "40", s.bridge).CombinedOutput()
+			s.t.Fatalf("pushing OTLP logs through the bridge failed: %s\nbridge container logs:\n%s", last, logs)
 		}
 		time.Sleep(2 * time.Second)
 	}

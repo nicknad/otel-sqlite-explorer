@@ -371,7 +371,9 @@ func (s *stack) startBridge() string {
 		log.Fatalf("temp dir: %v", err)
 	}
 	cfgPath := filepath.Join(dir, "otelcol.yaml")
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+	// Mode 0644: the collector image runs as a non-root user, so the
+	// config must stay readable inside the container on real Linux.
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		log.Fatalf("write bridge config: %v", err)
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
