@@ -18,3 +18,10 @@ vendor/
 
 # Generated demo database
 demo/
+
+# Statechart/model scratch and npm cache
+.statechart/
+.npm-cache/
+
+# Harvested sink fixtures (make collector-ddl)
+.fixtures/

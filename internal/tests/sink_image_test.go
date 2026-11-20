@@ -310,9 +310,16 @@ func TestSinkImageContract(t *testing.T) {
 		t.Fatal("expected the default body-mode search index on a sink-produced database")
 	}
 
-	// The sink's insert triggers must have kept the contentless index complete.
+	// The sink's insert triggers must have kept the contentless index
+	// complete. Fixture introspection opens its own connection: it verifies
+	// the harvested database, not db.Client's read path.
+	iconn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open harvested database for introspection: %v", err)
+	}
+	defer func() { _ = iconn.Close() }()
 	var ftsRows int
-	if err := client.DB().QueryRow("SELECT count(*) FROM logs_fts").Scan(&ftsRows); err != nil {
+	if err := iconn.QueryRow("SELECT count(*) FROM logs_fts").Scan(&ftsRows); err != nil {
 		t.Fatalf("count logs_fts: %v", err)
 	}
 	if ftsRows != 3 {

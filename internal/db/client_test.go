@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -150,8 +151,9 @@ func TestOpenPathWithURISpecialCharacters(t *testing.T) {
 		t.Errorf("a truncated database file was created next to the real one")
 	}
 
-	// mode=ro must still be in force for the escaped path.
-	if _, execErr := client.DB().Exec("CREATE TABLE should_fail (x INTEGER)"); execErr == nil {
+	// mode=ro must still be in force for the escaped path: the interface
+	// permits the attempt, the driver refuses it.
+	if _, execErr := client.ExecuteContext(context.Background(), &compiler.CompiledQuery{SQL: "CREATE TABLE should_fail (x INTEGER)"}); execErr == nil {
 		t.Error("expected write to be rejected on a read-only connection")
 	}
 }

@@ -27,166 +27,12 @@ import (
 	"strings"
 	"time"
 
+	"log-explorer/internal/democorpus"
 	"log-explorer/internal/schema"
 	sev "log-explorer/internal/severity"
 
 	_ "modernc.org/sqlite"
 )
-
-// severityWeights biases the shared severity model towards a realistic log
-// distribution (INFO commonest, FATAL rare). Text and number pairs come from
-// severity.All so they stay in sync with the UI's severity filter.
-var severityWeights = map[string]int{
-	"DEBUG": 8,
-	"INFO":  62,
-	"WARN":  18,
-	"ERROR": 10,
-	"FATAL": 2,
-}
-
-// attr is a single attribute emitted on a log event.
-type attr struct {
-	key  string
-	kind string // "str" | "int" | "float" | "bool" | "http_status" | "http_method"
-}
-
-// service describes a mock emitting service: its host, body templates
-// (filled with %s / %d placeholders), the attributes it emits, and the pool
-// of string values used for "str" kind attributes.
-type service struct {
-	name   string
-	host   string
-	bodies []string
-	attrs  []attr
-	strs   []string
-}
-
-var services = []service{
-	{
-		name: "api-gateway",
-		host: "gw-prod-01",
-		bodies: []string{
-			"connection timeout to upstream %s",
-			"request completed with status %d",
-			"rate limit exceeded for client %d",
-			"upstream 502 from %s",
-			"retrying upstream call attempt %d",
-			"invalid request rejected",
-		},
-		attrs: []attr{
-			{"http.method", "http_method"},
-			{"http.route", "str"},
-			{"http.status_code", "http_status"},
-			{"http.user_agent", "str"},
-			{"client.ip", "str"},
-			{"request.id", "int"},
-		},
-		strs: []string{"/api/v1/orders", "/api/v1/auth/login", "/api/v1/payments", "/healthz", "/api/v1/inventory",
-			"curl/8.0", "Go-http-client/2.0", "Mozilla/5.0", "python-requests/2.31",
-			"10.0.4.21", "10.0.4.22", "172.16.8.4", "172.16.8.9"},
-	},
-	{
-		name: "auth-svc",
-		host: "auth-prod-02",
-		bodies: []string{
-			"token validation failed for user %d",
-			"login success for user %d",
-			"password reset requested for user %d",
-			"invalid credentials attempt for user %d",
-			"refresh token rotation",
-			"MFA challenge issued",
-		},
-		attrs: []attr{
-			{"auth.user_id", "int"},
-			{"auth.tenant_id", "int"},
-			{"auth.mfa", "bool"},
-			{"auth.provider", "str"},
-			{"http.status_code", "http_status"},
-		},
-		strs: []string{"oidc", "okta", "github", "saml", "email", "passwordless"},
-	},
-	{
-		name: "checkout-svc",
-		host: "checkout-prod-01",
-		bodies: []string{
-			"order placed",
-			"payment processing for order %d",
-			"inventory reservation failed for sku %s",
-			"cart updated for user %d",
-			"order %d finalized",
-			"coupon applied",
-		},
-		attrs: []attr{
-			{"order.id", "int"},
-			{"order.total", "float"},
-			{"order.currency", "str"},
-			{"cart.items", "int"},
-			{"user.id", "int"},
-		},
-		strs: []string{"USD", "EUR", "GBP", "CAD"},
-	},
-	{
-		name: "payments-svc",
-		host: "pay-prod-03",
-		bodies: []string{
-			"charge succeeded for order %d",
-			"charge declined for order %d",
-			"refund issued for charge %s",
-			"webhook signature verification failed",
-			"payout scheduled",
-			"gateway timeout for charge %s",
-		},
-		attrs: []attr{
-			{"charge.id", "str"},
-			{"order.id", "int"},
-			{"payment.amount", "float"},
-			{"payment.method", "str"},
-			{"payment.status_code", "http_status"},
-			{"card.brand", "str"},
-		},
-		strs: []string{"ch_3NqWx9", "ch_3NrA1y", "ch_3NoC3q", "visa", "mastercard", "apple_pay", "amex"},
-	},
-	{
-		name: "inventory-svc",
-		host: "inv-prod-01",
-		bodies: []string{
-			"stock level updated for sku %s",
-			"out of stock for sku %s",
-			"reindex started",
-			"warehouse sync completed",
-			"inventory reservation expired for sku %s",
-			"backorder created for sku %s",
-		},
-		attrs: []attr{
-			{"sku", "str"},
-			{"warehouse.id", "str"},
-			{"stock.qty", "int"},
-			{"stock.reorder_level", "int"},
-		},
-		strs: []string{"SKU-1001", "SKU-2033", "SKU-4017", "SKU-8812", "SKU-9044",
-			"wh-east-1", "wh-west-2", "wh-eu-central-1"},
-	},
-	{
-		name: "worker-svc",
-		host: "worker-prod-05",
-		bodies: []string{
-			"job dispatched to queue",
-			"job %d failed after %d retries",
-			"queue depth high (%d pending)",
-			"processor heartbeat",
-			"dead letter message consumed",
-			"job %d completed in %d ms",
-		},
-		attrs: []attr{
-			{"job.id", "int"},
-			{"queue.name", "str"},
-			{"job.retries", "int"},
-			{"worker.id", "str"},
-			{"job.duration_ms", "int"},
-		},
-		strs: []string{"email-queue", "reindex-queue", "payout-queue", "worker-01", "worker-02", "worker-03"},
-	},
-}
 
 // traceRing keeps a short history of recently generated trace IDs so a
 // fraction of events share a trace (mimicking a multi-span request).
@@ -237,8 +83,8 @@ func (g *generator) pick[T any](items []T) T {
 }
 
 // attrValue produces a typed value for the given attribute.
-func (g *generator) attrValue(a attr, svc *service) any {
-	switch a.kind {
+func (g *generator) attrValue(a democorpus.Attr, svc *democorpus.Service) any {
+	switch a.Kind {
 	case "int":
 		return g.rng.IntN(1_000_000)
 	case "float":
@@ -257,14 +103,14 @@ func (g *generator) attrValue(a attr, svc *service) any {
 	case "http_method":
 		return g.pick([]string{"GET", "POST", "PUT", "DELETE", "PATCH"})
 	default:
-		return g.pick(svc.strs)
+		return g.pick(svc.Strs)
 	}
 }
 
-func (g *generator) eventAttrs(level string, svc *service) string {
-	attrs := make(map[string]any, len(svc.attrs)+1)
-	for _, a := range svc.attrs {
-		attrs[a.key] = g.attrValue(a, svc)
+func (g *generator) eventAttrs(level string, svc *democorpus.Service) string {
+	attrs := make(map[string]any, len(svc.Attrs)+1)
+	for _, a := range svc.Attrs {
+		attrs[a.Key] = g.attrValue(a, svc)
 	}
 	if level == "ERROR" || level == "FATAL" {
 		attrs["error.code"] = fmt.Sprintf("E%d", g.rng.IntN(9999))
@@ -280,8 +126,8 @@ func (g *generator) eventAttrs(level string, svc *service) string {
 // %d verbs get random numbers; %s verbs get domain-appropriate values (SKU
 // ids for stock templates, charge ids for payment templates, upstream
 // service names otherwise) so generated bodies read realistically.
-func (g *generator) body(svc *service) string {
-	tpl := g.pick(svc.bodies)
+func (g *generator) body(svc *democorpus.Service) string {
+	tpl := g.pick(svc.Bodies)
 	var sb strings.Builder
 	for i := 0; i < len(tpl); {
 		if tpl[i] == '%' && i+1 < len(tpl) && (tpl[i+1] == 's' || tpl[i+1] == 'd') {
@@ -300,27 +146,27 @@ func (g *generator) body(svc *service) string {
 }
 
 // stringSub picks a %s substitution fitting the template's domain.
-func (g *generator) stringSub(tpl string, svc *service) string {
+func (g *generator) stringSub(tpl string, svc *democorpus.Service) string {
 	lower := strings.ToLower(tpl)
 	switch {
 	case strings.Contains(lower, "sku"):
-		if v := g.pickWithPrefix(svc.strs, "SKU-"); v != "" {
+		if v := g.pickWithPrefix(svc.Strs, "SKU-"); v != "" {
 			return v
 		}
 		// Cross-service templates (e.g. checkout-svc's reservation failure)
 		// mention SKUs without stocking them; borrow from any pool that has
 		// them rather than dropping in a service name.
-		for i := range services {
-			if v := g.pickWithPrefix(services[i].strs, "SKU-"); v != "" {
+		for i := range democorpus.Services {
+			if v := g.pickWithPrefix(democorpus.Services[i].Strs, "SKU-"); v != "" {
 				return v
 			}
 		}
 	case strings.Contains(lower, "charge"):
-		if v := g.pickWithPrefix(svc.strs, "ch_"); v != "" {
+		if v := g.pickWithPrefix(svc.Strs, "ch_"); v != "" {
 			return v
 		}
 	}
-	return g.pick(upstreams)
+	return g.pick(democorpus.Upstreams)
 }
 
 // pickWithPrefix returns a random entry with the given prefix, or "" when
@@ -337,9 +183,6 @@ func (g *generator) pickWithPrefix(pool []string, prefix string) string {
 	}
 	return g.pick(matches)
 }
-
-// upstreams are the service names substituted into %s body placeholders.
-var upstreams = []string{"auth-svc", "checkout-svc", "payments-svc", "inventory-svc"}
 
 func main() {
 	out := flag.String("out", "demo/logs.db", "output database path")
@@ -394,23 +237,23 @@ func main() {
 	}
 
 	// Insert resources (one per service config).
-	for i, svc := range services {
+	for i, svc := range democorpus.Services {
 		id := fmt.Sprintf("res-%02d", i)
 		if _, err = conn.ExecContext(
 			ctx,
 			"INSERT INTO log_resource (id, service_name, host_name, schema_url) VALUES (?, ?, ?, ?)",
-			id, svc.name, svc.host, "https://opentelemetry.io/schemas/1.24.0",
+			id, svc.Name, svc.Host, "https://opentelemetry.io/schemas/1.24.0",
 		); err != nil {
-			log.Fatalf("insert resource %s: %v", svc.name, err)
+			log.Fatalf("insert resource %s: %v", svc.Name, err)
 		}
 	}
 
 	// Pre-compute per-service weights so api-gateway/auth-svc are noisiest.
-	resIDs := make([]string, 0, len(services))
-	weights := make([]int, 0, len(services))
+	resIDs := make([]string, 0, len(democorpus.Services))
+	weights := make([]int, 0, len(democorpus.Services))
 	var total int
-	for i := range services {
-		w := len(services[i].bodies) * (20 - i)
+	for i := range democorpus.Services {
+		w := len(democorpus.Services[i].Bodies) * (20 - i)
 		resIDs = append(resIDs, fmt.Sprintf("res-%02d", i))
 		weights = append(weights, w)
 		total += w
@@ -437,7 +280,7 @@ func main() {
 	// Events are inserted oldest-first so row ids increase with time.
 	for i := range *rows {
 		svcIdx := weightedPick(rng, weights, total)
-		svc := &services[svcIdx]
+		svc := &democorpus.Services[svcIdx]
 
 		lvl := weightedSeverity(rng)
 		// Bias timestamps toward the most recent hour: 60% of events land in
@@ -491,11 +334,11 @@ func main() {
 func weightedSeverity(rng *rand.Rand) sev.Level {
 	total := 0
 	for _, l := range sev.All {
-		total += severityWeights[l.Text]
+		total += democorpus.SeverityWeights[l.Text]
 	}
 	n := rng.IntN(total)
 	for _, l := range sev.All {
-		n -= severityWeights[l.Text]
+		n -= democorpus.SeverityWeights[l.Text]
 		if n < 0 {
 			return l
 		}

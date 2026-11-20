@@ -32,13 +32,12 @@ func (c *Client) Execute(cq *compiler.CompiledQuery) ([]LogRow, error) {
 	return c.ExecuteContext(context.Background(), cq)
 }
 
-// ExecuteContext is Execute bound to the caller's context. When the HTTP
-// client disconnects, the in-flight SQLite query is canceled instead of
-// holding the single connection until the timeout expires.
+// ExecuteContext is Execute bound to the caller's context. The deadline
+// starts at entry, before admission: waiting for a free pooled connection and
+// running the query share one budget, and a caller's earlier deadline fires
+// first. When the HTTP client disconnects, a queued or in-flight query is
+// canceled instead of outliving its budget.
 func (c *Client) ExecuteContext(ctx context.Context, cq *compiler.CompiledQuery) ([]LogRow, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 

@@ -48,6 +48,14 @@ vet:
 test-image:
 	go test -count=1 -v -run '^TestSinkImage' ./internal/tests
 
+# Harvest a fresh sink-produced database for collectorDDL regeneration.
+# Requires a Docker daemon; the dump lands in .fixtures/sink-harvest.db.
+# Regenerate the collectorDDL constant in internal/tests from that database's
+# schema and diff (docs/CONTRACT.md, docs/COUPLING-AUDIT.md section 2).
+collector-ddl:
+	mkdir -p .fixtures
+	EXPLORER_SINK_HARVEST_DUMP=.fixtures go test -count=1 -run '^TestSinkImage' ./internal/tests
+
 # Generate the demo database used to inspect the UI with realistic data.
 mock-db:
 	go run ./cmd/mockdb -out $(MOCK_DB)

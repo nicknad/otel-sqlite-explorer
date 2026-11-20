@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  # The read contract is proven against a database produced by the real
+  # sink image; GitHub runners have Docker, so this arm never skips. A sink
+  # release that breaks the read contract turns it red.
+  image-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - run: go test -count=1 -v -run '^TestSinkImage' ./internal/tests

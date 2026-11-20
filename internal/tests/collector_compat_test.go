@@ -287,10 +287,18 @@ func TestCollectorCompat_ReadPaths(t *testing.T) {
 // `logs_fts MATCH ?` + `JOIN logs.id = logs_fts.rowid` + bm25 ranking must
 // work unchanged.
 func TestCollectorCompat_FTS(t *testing.T) {
-	client := openCollectorRO(t, setupCollectorDB(t))
+	path := setupCollectorDB(t)
+	client := openCollectorRO(t, path)
 
+	// Fixture introspection opens its own connection: it verifies the
+	// harvested schema, not db.Client's read path.
+	iconn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open fixture for introspection: %v", err)
+	}
+	defer func() { _ = iconn.Close() }()
 	var ftsRows int
-	if err := client.DB().QueryRow(`SELECT count(*) FROM logs_fts`).Scan(&ftsRows); err != nil {
+	if err := iconn.QueryRow(`SELECT count(*) FROM logs_fts`).Scan(&ftsRows); err != nil {
 		t.Fatalf("fts count: %v", err)
 	}
 	if ftsRows != 3 {

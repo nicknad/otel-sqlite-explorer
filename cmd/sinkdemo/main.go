@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"log-explorer/internal/democorpus"
 	sev "log-explorer/internal/severity"
 
 	_ "modernc.org/sqlite"
@@ -42,145 +43,6 @@ const (
 	defaultSinkImage = "ghcr.io/nicknad/otel-sqlite:latest"
 	bridgeImage      = "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.159.0"
 )
-
-// severityWeights biases the demo traffic towards a realistic log
-// distribution (INFO commonest, FATAL rare), matching cmd/mockdb.
-var severityWeights = map[string]int{"DEBUG": 8, "INFO": 62, "WARN": 18, "ERROR": 10, "FATAL": 2}
-
-var upstreams = []string{"auth-svc", "checkout-svc", "payments-svc", "inventory-svc"}
-
-type attrSpec struct {
-	key  string
-	kind string // "str" | "int" | "float" | "bool" | "status" | "method"
-}
-
-type service struct {
-	name   string
-	host   string
-	bodies []string
-	attrs  []attrSpec
-	strs   []string
-}
-
-var services = []service{
-	{
-		name: "api-gateway", host: "gw-prod-01",
-		bodies: []string{
-			"connection timeout to upstream %s",
-			"request completed with status %d",
-			"rate limit exceeded for client %d",
-			"upstream 502 from %s",
-			"retrying upstream call attempt %d",
-			"invalid request rejected",
-		},
-		attrs: []attrSpec{
-			{"http.method", "method"},
-			{"http.route", "str"},
-			{"http.status_code", "status"},
-			{"http.user_agent", "str"},
-			{"client.ip", "str"},
-			{"request.id", "int"},
-		},
-		strs: []string{"/api/v1/orders", "/api/v1/auth/login", "/api/v1/payments", "/healthz", "/api/v1/inventory",
-			"curl/8.0", "Go-http-client/2.0", "Mozilla/5.0", "python-requests/2.31",
-			"10.0.4.21", "10.0.4.22", "172.16.8.4", "172.16.8.9"},
-	},
-	{
-		name: "auth-svc", host: "auth-prod-02",
-		bodies: []string{
-			"token validation failed for user %d",
-			"login success for user %d",
-			"password reset requested for user %d",
-			"invalid credentials attempt for user %d",
-			"refresh token rotation",
-			"MFA challenge issued",
-		},
-		attrs: []attrSpec{
-			{"auth.user_id", "int"},
-			{"auth.tenant_id", "int"},
-			{"auth.mfa", "bool"},
-			{"auth.provider", "str"},
-			{"http.status_code", "status"},
-		},
-		strs: []string{"oidc", "okta", "github", "saml", "email", "passwordless"},
-	},
-	{
-		name: "checkout-svc", host: "checkout-prod-01",
-		bodies: []string{
-			"order placed",
-			"payment processing for order %d",
-			"inventory reservation failed for sku %s",
-			"cart updated for user %d",
-			"order %d finalized",
-			"coupon applied",
-		},
-		attrs: []attrSpec{
-			{"order.id", "int"},
-			{"order.total", "float"},
-			{"order.currency", "str"},
-			{"cart.items", "int"},
-			{"user.id", "int"},
-		},
-		strs: []string{"USD", "EUR", "GBP", "CAD"},
-	},
-	{
-		name: "payments-svc", host: "pay-prod-03",
-		bodies: []string{
-			"charge succeeded for order %d",
-			"charge declined for order %d",
-			"refund issued for charge %s",
-			"webhook signature verification failed",
-			"payout scheduled",
-			"gateway timeout for charge %s",
-		},
-		attrs: []attrSpec{
-			{"charge.id", "str"},
-			{"order.id", "int"},
-			{"payment.amount", "float"},
-			{"payment.method", "str"},
-			{"payment.status_code", "status"},
-		},
-		strs: []string{"ch_3NqWx9", "ch_3NrA1y", "ch_3NoC3q", "visa", "mastercard", "apple_pay", "amex"},
-	},
-	{
-		name: "inventory-svc", host: "inv-prod-01",
-		bodies: []string{
-			"stock level updated for sku %s",
-			"out of stock for sku %s",
-			"reindex started",
-			"warehouse sync completed",
-			"inventory reservation expired for sku %s",
-			"backorder created for sku %s",
-		},
-		attrs: []attrSpec{
-			{"sku", "str"},
-			{"warehouse.id", "str"},
-			{"stock.qty", "int"},
-			{"stock.reorder_level", "int"},
-		},
-		strs: []string{"SKU-1001", "SKU-2033", "SKU-4017", "SKU-8812", "SKU-9044",
-			"wh-east-1", "wh-west-2", "wh-eu-central-1"},
-	},
-	{
-		name: "worker-svc", host: "worker-prod-05",
-		bodies: []string{
-			"job dispatched to queue",
-			"job %d failed after %d retries",
-			"queue depth high (%d pending)",
-			"processor heartbeat",
-			"dead letter message consumed",
-			"job %d completed in %d ms",
-		},
-		attrs: []attrSpec{
-			{"job.id", "int"},
-			{"queue.name", "str"},
-			{"job.retries", "int"},
-			{"worker.id", "str"},
-			{"job.duration_ms", "int"},
-		},
-		strs: []string{"email-queue", "reindex-queue", "payout-queue", "worker-01", "worker-02", "worker-03"},
-	},
-}
 
 // attrValue is one typed OTLP attribute value.
 type attrValue struct {
@@ -195,7 +57,7 @@ type recAttr struct {
 
 // record is one generated OTLP log record before JSON encoding.
 type record struct {
-	svc   *service
+	svc   *democorpus.Service
 	lvl   sev.Level
 	ts    int64
 	body  string
@@ -232,7 +94,7 @@ func (g *generator) traceID(i int) []byte {
 	}
 	if g.rng.IntN(100) < 25 {
 		if id := g.traces[g.rng.IntN(len(g.traces))]; id != nil {
-			return id // shared trace: a request spanning services
+			return id // shared trace: a request spanning democorpus.Services
 		}
 	}
 	id := make([]byte, 16)
@@ -252,15 +114,15 @@ func (g *generator) spanID() []byte {
 	return b
 }
 
-func (g *generator) genAttrValue(a attrSpec, svc *service) attrValue {
-	switch a.kind {
+func (g *generator) genAttrValue(a democorpus.Attr, svc *democorpus.Service) attrValue {
+	switch a.Kind {
 	case "int":
 		return attrValue{"intValue", strconv.Itoa(g.rng.IntN(1_000_000))}
 	case "float":
 		return attrValue{"doubleValue", float64(g.rng.IntN(10_000)) / 100}
 	case "bool":
 		return attrValue{"boolValue", g.rng.IntN(2) == 0}
-	case "status":
+	case "http_status":
 		var code int
 		switch r := g.rng.IntN(100); {
 		case r < 70:
@@ -271,17 +133,17 @@ func (g *generator) genAttrValue(a attrSpec, svc *service) attrValue {
 			code = g.pick([]int{500, 502, 503, 504})
 		}
 		return attrValue{"intValue", strconv.Itoa(code)}
-	case "method":
+	case "http_method":
 		return attrValue{"stringValue", g.pick([]string{"GET", "POST", "PUT", "DELETE", "PATCH"})}
 	default:
-		return attrValue{"stringValue", g.pick(svc.strs)}
+		return attrValue{"stringValue", g.pick(svc.Strs)}
 	}
 }
 
 // body fills every placeholder of a randomly chosen body template, keeping
 // substitutions domain-appropriate so bodies read realistically, with
 // sprinkled edge cases (empty, very long, and non-ASCII bodies).
-func (g *generator) body(i int, svc *service) string {
+func (g *generator) body(i int, svc *democorpus.Service) string {
 	switch {
 	case i%97 == 0:
 		return ""
@@ -290,7 +152,7 @@ func (g *generator) body(i int, svc *service) string {
 	case i%103 == 0:
 		return "支付网关到上游 checkout-svc 的连接超时 🚨 gateway timeout (测试)"
 	}
-	tpl := g.pick(svc.bodies)
+	tpl := g.pick(svc.Bodies)
 	var sb strings.Builder
 	for j := 0; j < len(tpl); {
 		if tpl[j] == '%' && j+1 < len(tpl) && (tpl[j+1] == 's' || tpl[j+1] == 'd') {
@@ -308,39 +170,39 @@ func (g *generator) body(i int, svc *service) string {
 	return sb.String()
 }
 
-func (g *generator) stringSub(tpl string, svc *service) string {
+func (g *generator) stringSub(tpl string, svc *democorpus.Service) string {
 	lower := strings.ToLower(tpl)
 	switch {
 	case strings.Contains(lower, "sku"):
-		if v := g.pickWithPrefix(svc.strs, "SKU-"); v != "" {
+		if v := g.pickWithPrefix(svc.Strs, "SKU-"); v != "" {
 			return v
 		}
-		for i := range services {
-			if v := g.pickWithPrefix(services[i].strs, "SKU-"); v != "" {
+		for i := range democorpus.Services {
+			if v := g.pickWithPrefix(democorpus.Services[i].Strs, "SKU-"); v != "" {
 				return v
 			}
 		}
 	case strings.Contains(lower, "charge"):
-		if v := g.pickWithPrefix(svc.strs, "ch_"); v != "" {
+		if v := g.pickWithPrefix(svc.Strs, "ch_"); v != "" {
 			return v
 		}
 	case strings.Contains(lower, "upstream"):
-		return g.pick(upstreams)
+		return g.pick(democorpus.Upstreams)
 	}
-	if len(svc.strs) > 0 {
-		return g.pick(svc.strs)
+	if len(svc.Strs) > 0 {
+		return g.pick(svc.Strs)
 	}
-	return g.pick(upstreams)
+	return g.pick(democorpus.Upstreams)
 }
 
 func weightedSeverity(rng *mathrand.Rand) sev.Level {
 	total := 0
 	for _, l := range sev.All {
-		total += severityWeights[l.Text]
+		total += democorpus.SeverityWeights[l.Text]
 	}
 	n := rng.IntN(total)
 	for _, l := range sev.All {
-		n -= severityWeights[l.Text]
+		n -= democorpus.SeverityWeights[l.Text]
 		if n < 0 {
 			return l
 		}
@@ -349,10 +211,10 @@ func weightedSeverity(rng *mathrand.Rand) sev.Level {
 }
 
 func weightedService(rng *mathrand.Rand) int {
-	weights := make([]int, len(services))
+	weights := make([]int, len(democorpus.Services))
 	total := 0
-	for i := range services {
-		weights[i] = len(services[i].bodies) * (20 - i)
+	for i := range democorpus.Services {
+		weights[i] = len(democorpus.Services[i].Bodies) * (20 - i)
 		total += weights[i]
 	}
 	n := rng.IntN(total)
@@ -395,7 +257,7 @@ func recordMap(r record) map[string]any {
 
 // buildPayload groups a batch of records by service into one OTLP export body.
 func buildPayload(batch []record) string {
-	bySvc := map[*service][]map[string]any{}
+	bySvc := map[*democorpus.Service][]map[string]any{}
 	for _, r := range batch {
 		bySvc[r.svc] = append(bySvc[r.svc], recordMap(r))
 	}
@@ -403,12 +265,12 @@ func buildPayload(batch []record) string {
 	for svc, recs := range bySvc {
 		resourceLogs = append(resourceLogs, map[string]any{
 			"resource": map[string]any{"attributes": []map[string]any{
-				{"key": "service.name", "value": map[string]any{"stringValue": svc.name}},
+				{"key": "service.name", "value": map[string]any{"stringValue": svc.Name}},
 				{"key": "service.namespace", "value": map[string]any{"stringValue": "otel-sqlite-explorer"}},
-				{"key": "host.name", "value": map[string]any{"stringValue": svc.host}},
+				{"key": "host.name", "value": map[string]any{"stringValue": svc.Host}},
 			}},
 			"scopeLogs": []map[string]any{{
-				"scope":      map[string]any{"name": svc.name + ".scope", "version": "0"},
+				"scope":      map[string]any{"name": svc.Name + ".scope", "version": "0"},
 				"logRecords": recs,
 			}},
 		})
@@ -627,7 +489,7 @@ func main() {
 
 	records := make([]record, 0, *rows)
 	for i := 0; i < *rows; i++ {
-		svc := &services[weightedService(rng)]
+		svc := &democorpus.Services[weightedService(rng)]
 		lvl := weightedSeverity(rng)
 		var age int64
 		if rng.IntN(100) < 60 {
@@ -646,8 +508,8 @@ func main() {
 		if r.trace != nil {
 			r.span = g.spanID()
 		}
-		for _, a := range svc.attrs {
-			r.attrs = append(r.attrs, recAttr{a.key, g.genAttrValue(a, svc)})
+		for _, a := range svc.Attrs {
+			r.attrs = append(r.attrs, recAttr{a.Key, g.genAttrValue(a, svc)})
 		}
 		if lvl.Text == "ERROR" || lvl.Text == "FATAL" {
 			r.attrs = append(r.attrs, recAttr{"error.code", attrValue{"stringValue", fmt.Sprintf("E%d", rng.IntN(9999))}})

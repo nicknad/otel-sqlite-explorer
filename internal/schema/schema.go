@@ -80,3 +80,22 @@ END;
 CREATE TRIGGER IF NOT EXISTS logs_fts_ad AFTER DELETE ON log_event BEGIN
     DELETE FROM logs_fts WHERE rowid = old.id;
 END;`
+
+// SearchStateBody installs the sink's declared body-mode state row on a
+// synthetic fixture: the default 006 shape, ready. The mode is advisory
+// (classification reads the triggers, not this row) and exists for honest
+// UI copy and mode tests.
+const SearchStateBody = `CREATE TABLE search_index_state (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	mode TEXT NOT NULL CHECK (mode IN ('off', 'body', 'full')),
+	status TEXT NOT NULL CHECK (status IN ('ready', 'rebuilding')),
+	last_rowid INTEGER NOT NULL DEFAULT 0,
+	rebuild_until INTEGER,
+	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO search_index_state (id, mode, status) VALUES (1, 'body', 'ready');`
+
+// SearchStateFull flips the fixture's declared mode to the legacy
+// six-column full shape.
+const SearchStateFull = SearchStateBody + `
+UPDATE search_index_state SET mode = 'full' WHERE id = 1;`

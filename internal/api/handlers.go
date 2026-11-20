@@ -13,7 +13,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"math"
 	"mime"
 	"net/http"
 	"path"
@@ -26,13 +25,16 @@ import (
 	"log-explorer/internal/compiler"
 	"log-explorer/internal/db"
 	"log-explorer/internal/dsl"
-	"log-explorer/internal/severity"
+	"log-explorer/internal/query"
 	"log-explorer/internal/ui"
 )
 
-// Server holds shared state for HTTP handlers.
+// Server holds shared state for HTTP handlers: the read-only database (for
+// the detail view's direct query and FTS availability) and the query pipeline
+// every log request runs through.
 type Server struct {
 	db    *db.Client
+	pipe  *query.Pipeline
 	tmpls *template.Template
 }
 
@@ -67,7 +69,7 @@ func NewServer(database *db.Client) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
-	return &Server{db: database, tmpls: tmpl}, nil
+	return &Server{db: database, pipe: query.New(database), tmpls: tmpl}, nil
 }
 
 // maxQueryBodyBytes caps JSON query request bodies so a single huge payload
@@ -168,19 +170,20 @@ func (s *Server) Handler(mux http.Handler) http.Handler {
 // pageData carries everything the logs.html template needs to render the
 // filter form (with preserved values) plus result rows and pagination state.
 type pageData struct {
-	Logs     []db.LogRow
-	HasFTS   bool // full-text search available (logs_fts index present)
-	Service  string
-	Severity string
-	TraceID  string
-	SpanID   string
-	Body     string
-	Search   string // full-text (FTS5) query; maps to a MatchExpr
-	Since    string
-	DateFrom string // RFC3339 / datetime-local start (inclusive)
-	DateTo   string // RFC3339 / datetime-local end (inclusive)
-	Limit    int
-	Offset   int
+	Logs       []db.LogRow
+	HasFTS     bool   // full-text search available (a maintained logs_fts index)
+	SearchMode string // sink-declared index mode: "off", "body", "full"; "" when unknown
+	Service    string
+	Severity   string
+	TraceID    string
+	SpanID     string
+	Body       string
+	Search     string // full-text (FTS5) query; maps to a MatchExpr
+	Since      string
+	DateFrom   string // RFC3339 / datetime-local start (inclusive)
+	DateTo     string // RFC3339 / datetime-local end (inclusive)
+	Limit      int
+	Offset     int
 	// PrevOffset / NextOffset are the pager submit values; PrevOffset is
 	// clamped to 0 so a partially-filled first page cannot page backwards.
 	PrevOffset int
@@ -197,33 +200,32 @@ type pageData struct {
 // ============================================================================
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	pd, err := pageDataFromForm(r)
+	filters := formFiltersFromRequest(r)
+	page, err := s.pipe.PageFromForm(r.Context(), filters)
 	if err != nil {
-		s.renderError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	pd.QuerySuffix = querySuffix(r)
-	if err := s.runQuery(r.Context(), &pd); err != nil {
-		// User-supplied filter problems (bad severity, date, limit, …) are
-		// the client's fault; anything else is a server-side failure.
-		// The message is template-escaped on render, so echoing the input
-		// back is XSS-safe.
-		if isValidationError(err) {
-			s.renderError(w, http.StatusBadRequest, err.Error())
+		// User-supplied filter problems are the client's fault; anything
+		// else is a server-side failure. The message is template-escaped on
+		// render, so echoing the input back is XSS-safe.
+		var ve *query.ValidationError
+		if errors.As(err, &ve) {
+			// Byte-identity: every rule except the form's limit/offset parse
+			// errors rendered with the "validation: " prefix; those two never
+			// did. Both framings reproduce here from the typed error.
+			msg := ve.Error()
+			if ve.Rule == "limit" || ve.Rule == "offset" {
+				msg = ve.Detail
+			}
+			s.renderError(w, http.StatusBadRequest, msg)
 			return
 		}
 		log.Printf("logs page query error: %v", err)
 		s.renderError(w, http.StatusInternalServerError, "Internal error")
 		return
 	}
+	pd := pageDataFromFilters(r, filters, page)
+	pd.HasFTS = s.db.HasFTS()
+	pd.SearchMode = s.db.SearchMode()
 	s.renderLogsPage(w, &pd)
-}
-
-// isValidationError reports whether err stems from user input rather than a
-// server-side failure. runQuery prefixes all input problems with
-// "validation: ".
-func isValidationError(err error) bool {
-	return err != nil && strings.HasPrefix(err.Error(), "validation: ")
 }
 
 // ============================================================================
@@ -254,20 +256,20 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON: unexpected data after query object", http.StatusBadRequest)
 		return
 	}
-	if err := dsl.Validate(&q); err != nil {
-		http.Error(w, fmt.Sprintf("validation: %v", err), http.StatusBadRequest)
-		return
-	}
-	rows, err := s.executeQuery(r.Context(), &q)
+	page, err := s.pipe.PageFromDSL(r.Context(), q)
 	if err != nil {
-		if isValidationError(err) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		var ve *query.ValidationError
+		if errors.As(err, &ve) {
+			// Byte-identity: the legacy body carried the "validation: "
+			// prefix for every rule on this path.
+			http.Error(w, ve.Error(), http.StatusBadRequest)
 			return
 		}
 		log.Printf("JSON query error: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
+	rows := page.Rows
 	accept := r.Header.Get("Accept")
 	if strings.Contains(accept, "application/json") {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -340,172 +342,14 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
-// Query pipeline
-// ============================================================================
-
-// runQuery builds a DSL query from the page data, executes it, and fills in
-// pd.Logs plus pagination flags (HasPrev / HasNext). It queries limit+1 rows
-// to detect whether a next page exists.
-func (s *Server) runQuery(ctx context.Context, pd *pageData) error {
-	pd.HasFTS = s.db.HasFTS()
-	var exprs []dsl.Expr
-	if pd.Service != "" {
-		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpContains, Field: "service_name", Value: dsl.Value{Type: dsl.ValueString, String: pd.Service}})
-	}
-	if pd.Severity != "" {
-		n := severity.Number(pd.Severity)
-		if n == 0 {
-			return fmt.Errorf("validation: unknown severity %q (expected DEBUG, INFO, WARN, ERROR, or FATAL)", pd.Severity)
-		}
-		// Canonicalize so the form dropdown reflects the active filter even
-		// when the user typed a lowercase severity in the URL.
-		pd.Severity = strings.ToUpper(pd.Severity)
-		exprs = append(exprs, dsl.BinaryExpr{
-			Op:    dsl.OpGte,
-			Field: "severity_number",
-			Value: dsl.Value{Type: dsl.ValueInt, Int: n},
-		})
-	}
-	if pd.TraceID != "" {
-		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpEq, Field: "trace_id", Value: dsl.Value{Type: dsl.ValueString, String: pd.TraceID}})
-	}
-	if pd.SpanID != "" {
-		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpEq, Field: "span_id", Value: dsl.Value{Type: dsl.ValueString, String: pd.SpanID}})
-	}
-	if pd.Body != "" {
-		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpContains, Field: "body", Value: dsl.Value{Type: dsl.ValueString, String: pd.Body}})
-	}
-	// Date range filters — convert to timestamp nanoseconds for DSL.
-	// A date-only From starts at the beginning of that day; a date-only To
-	// covers through the end of that day. Unparseable input is a client
-	// error, not a silent no-op.
-	if pd.DateFrom != "" {
-		ts, err := parseDateTime(pd.DateFrom, false)
-		if err != nil {
-			return fmt.Errorf("validation: invalid date_from: %w", err)
-		}
-		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpGte, Field: "timestamp", Value: dsl.Value{Type: dsl.ValueInt, Int: ts}})
-	}
-	if pd.DateTo != "" {
-		ts, err := parseDateTime(pd.DateTo, true)
-		if err != nil {
-			return fmt.Errorf("validation: invalid date_to: %w", err)
-		}
-		exprs = append(exprs, dsl.BinaryExpr{Op: dsl.OpLte, Field: "timestamp", Value: dsl.Value{Type: dsl.ValueInt, Int: ts}})
-	}
-	if pd.Search != "" {
-		exprs = append(exprs, dsl.MatchExpr{Query: pd.Search})
-	}
-
-	q := dsl.Query{
-		Select: "*",
-		Since:  pd.Since,
-		Limit:  pd.Limit,
-		Offset: pd.Offset,
-	}
-	if len(exprs) > 0 {
-		q.Where = andExprs(exprs)
-	}
-
-	if err := dsl.Validate(&q); err != nil {
-		return fmt.Errorf("validation: %w", err)
-	}
-
-	// Normalize the base query so the probe below uses effective defaults, and
-	// mirror those values back onto the page data for form re-rendering.
-	// q.Since is consumed by Normalize, so preserve the raw form value first.
-	since := pd.Since
-	s.rewriteMatchToContains(&q)
-	dsl.Normalize(&q)
-	pd.Limit = q.Limit
-	pd.Offset = q.Offset
-	pd.Since = since
-
-	// Query one extra row to detect a next page. The probe is compiled and
-	// executed directly (not through executeQuery) because re-normalizing it
-	// would clamp limit+1 back to MaxLimit, hiding the next page exactly when
-	// the requested limit is MaxLimit.
-	probe := q
-	probe.Limit = min(q.Limit+1, dsl.MaxLimit+1)
-	rows, err := s.compileExecute(ctx, &probe)
-	if err != nil {
-		return err
-	}
-
-	pd.HasNext = len(rows) > q.Limit
-	if pd.HasNext {
-		rows = rows[:q.Limit]
-	}
-	pd.HasPrev = pd.Offset > 0
-	pd.PrevOffset = max(pd.Offset-pd.Limit, 0)
-	pd.NextOffset = pd.Offset + pd.Limit
-	pd.Logs = rows
-	return nil
-}
-
-// executeQuery runs a validated DSL query through the full pipeline: FTS
-// fallback (when the backing DB has no logs_fts index), normalization,
-// compilation, and execution. Execution failures are logged with their SQL
-// and arguments server-side; the returned error carries only the database
-// message so handlers can safely surface it without leaking internals.
-func (s *Server) executeQuery(ctx context.Context, q *dsl.Query) ([]db.LogRow, error) {
-	s.rewriteMatchToContains(q)
-	dsl.Normalize(q)
-	return s.compileExecute(ctx, q)
-}
-
-// compileExecute validates FTS syntax, compiles, and executes an
-// already-normalized query. Callers that need the limit+1 headroom (the
-// pagination probe) must use this directly so Normalize cannot clamp it.
-func (s *Server) compileExecute(ctx context.Context, q *dsl.Query) ([]db.LogRow, error) {
-	if err := s.validateMatches(ctx, q); err != nil {
-		return nil, err
-	}
-	cq, err := compiler.Compile(q)
-	if err != nil {
-		return nil, fmt.Errorf("validation: %w", err)
-	}
-	rows, err := s.db.ExecuteContext(ctx, cq)
-	if err != nil {
-		log.Printf("query execute error: %v | SQL: %s | args: %v", err, cq.SQL, cq.Args)
-		return nil, fmt.Errorf("execute: %w", err)
-	}
-	return rows, nil
-}
-
-// validateMatches rejects invalid FTS5 syntax up front: the search box passes
-// user input straight to MATCH, and a query like `"unterminated` would
-// otherwise fail inside the main query and surface as a 500.
-func (s *Server) validateMatches(ctx context.Context, q *dsl.Query) error {
-	if !s.db.HasFTS() {
-		return nil
-	}
-	for _, m := range dsl.MatchQueries(q.Where) {
-		if err := s.db.ValidateMatch(ctx, m); err != nil {
-			return fmt.Errorf("validation: invalid full-text search %q: %s", m, cleanDBMessage(err))
-		}
-	}
-	return nil
-}
-
-// cleanDBMessage strips driver noise ("SQL logic error: " prefix and the
-// trailing "(<code>)" result code) from database errors surfaced to clients.
-func cleanDBMessage(err error) string {
-	msg := strings.TrimPrefix(err.Error(), "SQL logic error: ")
-	if i := strings.LastIndex(msg, " ("); i > 0 && strings.HasSuffix(msg, ")") {
-		if _, convErr := strconv.Atoi(msg[i+2 : len(msg)-1]); convErr == nil {
-			msg = msg[:i]
-		}
-	}
-	return msg
-}
-
-// ============================================================================
 // GET /healthz  —  liveness probe (no log query)
 // ============================================================================
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	if err := s.db.Ping(); err != nil {
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// The probe owns its budget: two seconds regardless of query load.
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.db.Ping(ctx); err != nil {
 		log.Printf("health check failed: %v", err)
 		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
 		return
@@ -518,13 +362,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // Form → pageData conversion
 // ============================================================================
 
-// pageDataFromForm builds pageData from an HTTP GET query string, preserving
-// all filter values so they can be re-rendered in the form. Unparseable or
-// out-of-range limit/offset values are rejected instead of being silently
-// ignored (which would disagree with the documented 400-on-invalid behavior).
-func pageDataFromForm(r *http.Request) (pageData, error) {
+// formFiltersFromRequest extracts the raw filter values of the logs form.
+// Text filters are trimmed exactly as the legacy form parser did; Since,
+// Limit and Offset keep their raw values (their rules live in the pipeline).
+func formFiltersFromRequest(r *http.Request) query.FormFilters {
 	_ = r.ParseForm()
-	pd := pageData{
+	return query.FormFilters{
 		Service:  strings.TrimSpace(r.FormValue("service_name")),
 		Severity: strings.TrimSpace(r.FormValue("severity")),
 		TraceID:  strings.TrimSpace(r.FormValue("trace_id")),
@@ -534,79 +377,34 @@ func pageDataFromForm(r *http.Request) (pageData, error) {
 		Since:    r.FormValue("since"),
 		DateFrom: strings.TrimSpace(r.FormValue("date_from")),
 		DateTo:   strings.TrimSpace(r.FormValue("date_to")),
-		Limit:    100,
-		Offset:   0,
+		Limit:    r.FormValue("limit"),
+		Offset:   r.FormValue("offset"),
 	}
-	if v := r.FormValue("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 || n > dsl.MaxLimit {
-			return pageData{}, fmt.Errorf("limit must be an integer between 1 and %d, or 0 for the default", dsl.MaxLimit)
-		}
-		if n > 0 {
-			pd.Limit = n
-		}
-	}
-	if v := r.FormValue("offset"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			return pageData{}, errors.New("offset must be a non-negative integer")
-		}
-		pd.Offset = n
-	}
-	return pd, nil
 }
 
-// parseDateTime parses a date or datetime string from the HTML form and returns
-// the corresponding epoch nanoseconds (UTC). Supported formats:
-//
-//   - "2006-01-02T15:04"   (datetime-local, interpreted in the server's local
-//     time zone, since browsers submit it without an offset)
-//   - "2006-01-02T15:04:05" (same, with seconds)
-//   - "2006-01-02"         (date only: start of day, or end of day when
-//     endOfDay is true for an inclusive upper bound)
-//   - RFC3339 / RFC3339Nano (e.g. "2024-01-15T14:30:00Z", offset honored)
-func parseDateTime(s string, endOfDay bool) (int64, error) {
-	// datetime-local carries no offset; interpret it in local time.
-	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02T15:04"} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			return toUnixNano(t)
-		}
+// pageDataFromFilters builds the template view: filter inputs re-render their
+// raw values, while severity, limit, offset and since come from the
+// pipeline's canonical echo.
+func pageDataFromFilters(r *http.Request, f query.FormFilters, page query.Page) pageData {
+	return pageData{
+		Logs:        page.Rows,
+		Service:     f.Service,
+		Severity:    page.Echo.Severity,
+		TraceID:     f.TraceID,
+		SpanID:      f.SpanID,
+		Body:        f.Body,
+		Search:      f.Search,
+		Since:       page.Echo.Since,
+		DateFrom:    f.DateFrom,
+		DateTo:      f.DateTo,
+		Limit:       page.Echo.Limit,
+		Offset:      page.Echo.Offset,
+		PrevOffset:  page.PrevOffset,
+		NextOffset:  page.NextOffset,
+		HasPrev:     page.HasPrev,
+		HasNext:     page.HasNext,
+		QuerySuffix: querySuffix(r),
 	}
-	// RFC3339 timestamps carry their own offset.
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return toUnixNano(t)
-		}
-	}
-	// Date only — start or end of that day (UTC).
-	t, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		return 0, fmt.Errorf("cannot parse date: %q", s)
-	}
-	if endOfDay {
-		// End of day: 23:59:59.999999999 UTC
-		end := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
-		return toUnixNano(end)
-	}
-	return toUnixNano(time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC))
-}
-
-// unixNanoMin/unixNanoMax bound the representable int64 nanosecond range
-// (1677-09-21T00:12:43Z to 2262-04-11T23:47:16Z). time.Time.UnixNano is
-// undefined outside it, so out-of-range form values must be rejected.
-var (
-	unixNanoMin = time.Unix(0, math.MinInt64).UTC()
-	unixNanoMax = time.Unix(0, math.MaxInt64).UTC()
-)
-
-// toUnixNano converts t to UTC epoch nanoseconds, rejecting timestamps whose
-// UnixNano would silently wrap.
-func toUnixNano(t time.Time) (int64, error) {
-	t = t.UTC()
-	if t.Before(unixNanoMin) || t.After(unixNanoMax) {
-		return 0, fmt.Errorf("%s is outside the supported range (1677-09-21 to 2262-04-11)", t.Format("2006-01-02"))
-	}
-	return t.UnixNano(), nil
 }
 
 // querySuffix returns the active query string as a canonical "?a=b&c=d"
@@ -618,28 +416,4 @@ func querySuffix(r *http.Request) string {
 		return ""
 	}
 	return "?" + r.URL.Query().Encode()
-}
-
-// andExprs combines a slice of expressions into a single AND tree.
-// For 0 expressions returns nil; for 1 returns it directly.
-func andExprs(exprs []dsl.Expr) dsl.Expr {
-	if len(exprs) == 0 {
-		return nil
-	}
-	result := exprs[0]
-	for _, e := range exprs[1:] {
-		result = dsl.LogicalExpr{LogicalOp: dsl.OpAnd, Left: result, Right: e}
-	}
-	return result
-}
-
-// rewriteMatchToContains rewrites any MatchExpr nodes to body substring
-// matches when the backing database has no logs_fts full-text index. Must run
-// after Validate and before Normalize so default ordering is applied correctly
-// for the fallback path.
-func (s *Server) rewriteMatchToContains(q *dsl.Query) {
-	if s.db.HasFTS() || q.Where == nil {
-		return
-	}
-	q.Where = dsl.RewriteMatchToContains(q.Where)
 }

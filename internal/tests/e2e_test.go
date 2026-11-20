@@ -2,6 +2,7 @@ package tests
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -687,16 +688,17 @@ func TestReadOnly_WriteRejected(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	_, err = client.DB().Exec("CREATE TABLE should_fail (x INTEGER)")
-	if err == nil {
+	write := func(stmt string) error {
+		_, werr := client.ExecuteContext(context.Background(), &compiler.CompiledQuery{SQL: stmt})
+		return werr
+	}
+	if err := write("CREATE TABLE should_fail (x INTEGER)"); err == nil {
 		t.Fatal("expected error for write on read-only connection")
 	}
-	_, err = client.DB().Exec("INSERT INTO logs (body) VALUES ('test')")
-	if err == nil {
+	if err := write("INSERT INTO logs (body) VALUES ('test')"); err == nil {
 		t.Fatal("expected error for INSERT on read-only connection")
 	}
-	_, err = client.DB().Exec("DELETE FROM logs WHERE id = 1")
-	if err == nil {
+	if err := write("DELETE FROM logs WHERE id = 1"); err == nil {
 		t.Fatal("expected error for DELETE on read-only connection")
 	}
 }

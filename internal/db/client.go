@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver registration
@@ -27,10 +27,23 @@ var requiredLogColumns = []string{
 // rather than "context deadline exceeded".
 const DefaultQueryTimeout = 10 * time.Second
 
-// Client holds the read-only SQLite connection.
+// maxConcurrentReads bounds the read connection pool. The database file is
+// written live by the sink, so the explorer keeps a small, deliberate reader
+// footprint; concurrent queries share one page cache via cache=shared. If
+// modernc surfaces table-lock errors under concurrency, drop cache=shared
+// from the DSN (per-connection page caches are cheap at this pool size).
+const maxConcurrentReads = 4
+
+// Client holds the read-only SQLite access: a small pool of query
+// connections plus one dedicated probe connection. The pool itself is the
+// admission gate — database/sql queues QueryContext callers for a free
+// connection while honoring their context, so a queued request counts down
+// its own deadline (R4). The probe lane answers /healthz even while every
+// query connection is busy (R5). The search capability is classified once at
+// Open and immutable afterwards.
 type Client struct {
 	db      *sql.DB
-	mu      sync.Mutex
+	probe   *sql.DB
 	search  searchCapability // classified once in Open; immutable afterwards
 	timeout time.Duration
 }
@@ -58,8 +71,11 @@ func Open(path string) (*Client, error) {
 		return nil, fmt.Errorf("db ping: %w", err)
 	}
 
-	// Limit to 1 connection to keep things simple
-	db.SetMaxOpenConns(1)
+	// A small pool of read connections: the pool is the admission gate
+	// (database/sql honors each query's context while waiting for a free
+	// connection), and concurrent readers share one page cache via
+	// cache=shared.
+	db.SetMaxOpenConns(maxConcurrentReads)
 
 	// Reject databases without the expected read model up front: otherwise
 	// the server starts, /healthz reports healthy, and every real query fails.
@@ -68,16 +84,30 @@ func Open(path string) (*Client, error) {
 		return nil, err
 	}
 
+	// The probe lane: one dedicated read-only connection used only by
+	// Ping, so liveness never queues behind queries (R5).
+	probe, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("db open probe: %w", err)
+	}
+	probe.SetMaxOpenConns(1)
+	if err := probe.PingContext(context.Background()); err != nil {
+		_ = db.Close()
+		_ = probe.Close()
+		return nil, fmt.Errorf("db ping probe: %w", err)
+	}
+
 	// Classify the full-text search capability. A logs_fts table alone
 	// proves nothing - the sink leaves one behind in every search mode,
 	// including 'off', where nothing maintains it - so the capability reads
 	// what actually keeps MATCH truthful: an fts5 virtual table maintained
 	// by triggers on log_event. When it is unavailable, MatchExpr nodes are
-	// rewritten to body substring matches by the API layer so the app keeps
-	// working on plain databases.
+	// rewritten to body substring matches by the query pipeline so the app
+	// keeps working on plain databases.
 	capability := detectSearchCapability(context.Background(), db)
 
-	return &Client{db: db, search: capability, timeout: DefaultQueryTimeout}, nil
+	return &Client{db: db, probe: probe, search: capability, timeout: DefaultQueryTimeout}, nil
 }
 
 // validateReadModel checks that the database exposes a logs view/table with
@@ -116,16 +146,14 @@ func validateReadModel(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// DB returns the underlying *sql.DB for diagnostics and tests. Queries issued
-// through it bypass the client timeout and association with request contexts;
-// production code should use ExecuteContext instead.
-func (c *Client) DB() *sql.DB {
-	return c.db
-}
-
-// Close shuts down the database connection.
+// Close shuts down both connection pools.
 func (c *Client) Close() error {
-	return c.db.Close()
+	qerr := c.db.Close()
+	perr := c.probe.Close()
+	if qerr != nil {
+		return qerr
+	}
+	return perr
 }
 
 // HasFTS reports whether a full-text MATCH on this database can be trusted:
@@ -137,28 +165,33 @@ func (c *Client) HasFTS() bool {
 	return c.search.Active()
 }
 
-// Ping verifies the database answers within a short deadline. It backs the
-// /healthz endpoint so orchestrators can probe liveness without running a
-// real log query.
-func (c *Client) Ping() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// SearchMode reports the sink's declared search mode ("off", "body", "full")
+// when a search_index_state row exists; "" on foreign or pre-006 databases.
+// Advisory, for honest UI copy; classification never consults it.
+func (c *Client) SearchMode() string {
+	return c.search.mode
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := c.db.QueryRowContext(ctx, "SELECT 1").Err(); err != nil {
+// Ping verifies the database answers within the caller's budget. It backs the
+// /healthz endpoint so orchestrators can probe liveness without running a
+// real log query. The probe lane never queues behind queries: a
+// busy-but-healthy instance answers healthy within its own deadline (R5), and
+// if the sink's writer holds exclusive locks, busy_timeout makes the failure
+// honest.
+func (c *Client) Ping(ctx context.Context) error {
+	if err := c.probe.QueryRowContext(ctx, "SELECT 1").Err(); err != nil {
 		return fmt.Errorf("ping: %w", err)
 	}
 	return nil
 }
 
 // ValidateMatch checks that query is valid FTS5 MATCH syntax without returning
-// log rows. A valid query with no matches is not an error. This lets the API
-// layer report bad user syntax as a 400 instead of a database failure.
+// log rows. A valid query with no matches is not an error. Errors carry a
+// message cleaned of driver noise ("SQL logic error: " prefix and the
+// trailing "(<code>)" result code) so callers can surface them to clients
+// without leaking internals; this is the driver's home, so the translation
+// lives here.
 func (c *Client) ValidateMatch(ctx context.Context, query string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -167,5 +200,20 @@ func (c *Client) ValidateMatch(ctx context.Context, query string) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // valid syntax, no matching rows
 	}
-	return err
+	if err != nil {
+		return errors.New(cleanDriverMessage(err.Error()))
+	}
+	return nil
+}
+
+// cleanDriverMessage strips driver noise ("SQL logic error: " prefix and the
+// trailing "(<code>)" result code) from database errors surfaced to clients.
+func cleanDriverMessage(msg string) string {
+	msg = strings.TrimPrefix(msg, "SQL logic error: ")
+	if i := strings.LastIndex(msg, " ("); i > 0 && strings.HasSuffix(msg, ")") {
+		if _, convErr := strconv.Atoi(msg[i+2 : len(msg)-1]); convErr == nil {
+			msg = msg[:i]
+		}
+	}
+	return msg
 }

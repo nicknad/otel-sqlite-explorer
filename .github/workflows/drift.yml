@@ -1,0 +1,17 @@
+name: sink-drift
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: Drift alarm against the latest published sink
+        run: go test -count=1 -v -run '^TestSinkImage' ./internal/tests

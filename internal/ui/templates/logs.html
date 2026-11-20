@@ -15,7 +15,7 @@
 
   {{if not .HasFTS}}
   <p class="fts-note">
-    Full-text search unavailable: this database has no <code>logs_fts</code> index.
+    Full-text search unavailable: this database has no maintained <code>logs_fts</code> index.
     Use the &ldquo;Body&rdquo; filter below for substring matching instead.
   </p>
   {{end}}
@@ -28,7 +28,7 @@
     {{if .HasFTS}}
     <label class="search-field"> Search (full-text)
       <input type="text" name="search" placeholder="e.g. timeout gateway" value="{{.Search}}">
-      <small>FTS5: words match independently across body &amp; service</small>
+      <small>{{if eq .SearchMode "full"}}FTS5: words match independently across body &amp; service{{else}}FTS5: words match in the log body{{end}}</small>
     </label>
     {{end}}
     <label> Service

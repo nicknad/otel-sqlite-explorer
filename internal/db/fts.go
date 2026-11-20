@@ -33,6 +33,12 @@ const (
 type searchCapability struct {
 	state  ftsState
 	reason string
+	// mode mirrors search_index_state.mode on 006+ sink databases: "off",
+	// "body" or "full". Advisory only — deliberately not consulted for
+	// classification (the triggers are the mechanism) — it exists so the
+	// UI can say what MATCH actually covers instead of overclaiming.
+	// "" on foreign and pre-006 databases.
+	mode string
 }
 
 // Active is the one-bit projection every consumer uses.
@@ -74,6 +80,19 @@ func probeFTS(ctx context.Context, db *sql.DB) (ftsProbe, error) {
 	return p, nil
 }
 
+// probeSearchMode mirrors search_index_state.mode when the sink's state row
+// exists (006+). Advisory only: classification never consults it (the
+// triggers are what keep MATCH true); the UI does, so its copy can say what
+// the index actually covers. Foreign and pre-006 databases yield "".
+func probeSearchMode(ctx context.Context, db *sql.DB) string {
+	const q = "SELECT mode FROM search_index_state WHERE id = 1"
+	var mode string
+	if err := db.QueryRowContext(ctx, q).Scan(&mode); err != nil {
+		return "" // absent table or row, or unreadable: unknown mode
+	}
+	return mode
+}
+
 // detectSearchCapability is the boundary wrapper called once from Open. A
 // probe failure degrades to ftsMissing (substring fallback) rather than
 // failing Open: capability detection is advisory, and the explorer must
@@ -81,9 +100,11 @@ func probeFTS(ctx context.Context, db *sql.DB) (ftsProbe, error) {
 func detectSearchCapability(ctx context.Context, db *sql.DB) searchCapability {
 	p, err := probeFTS(ctx, db)
 	if err != nil {
-		return searchCapability{ftsMissing, "probe failed: " + err.Error()}
+		return searchCapability{state: ftsMissing, reason: "probe failed: " + err.Error()}
 	}
-	return classifyFTS(p)
+	capability := classifyFTS(p)
+	capability.mode = probeSearchMode(ctx, db)
+	return capability
 }
 
 // classifyFTS is the pure decision rule:
@@ -98,18 +119,18 @@ func detectSearchCapability(ctx context.Context, db *sql.DB) searchCapability {
 // and index row counts (a rebuilding index legitimately starts empty).
 func classifyFTS(p ftsProbe) searchCapability {
 	if p.createSQL == "" {
-		return searchCapability{ftsMissing, "no logs_fts table"}
+		return searchCapability{state: ftsMissing, reason: "no logs_fts table"}
 	}
 	if !isFts5VirtualTable(p.createSQL) {
-		return searchCapability{ftsMissing,
-			"logs_fts is not an fts5 virtual table; refusing to MATCH a plain table"}
+		return searchCapability{state: ftsMissing,
+			reason: "logs_fts is not an fts5 virtual table; refusing to MATCH a plain table"}
 	}
 	if p.maintTriggers == 0 {
-		return searchCapability{ftsUnmaintained,
-			"logs_fts exists but no log_event trigger maintains it " +
+		return searchCapability{state: ftsUnmaintained,
+			reason: "logs_fts exists but no log_event trigger maintains it " +
 				"(sink search mode 'off', or a one-shot backfill)"}
 	}
-	return searchCapability{ftsActive, "fts5 logs_fts maintained by log_event triggers"}
+	return searchCapability{state: ftsActive, reason: "fts5 logs_fts maintained by log_event triggers"}
 }
 
 // isFts5VirtualTable reports whether a CREATE statement declares an fts5
