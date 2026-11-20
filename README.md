@@ -31,6 +31,22 @@ database that exposes a `logs` view/table with the columns below.
 
 ## Quick Start
 
+### Published image
+
+Release builds are published to GHCR with the same pipeline the sink uses
+(`.github/workflows/publish.yml`: per-arch native builds, trivy CVE gate,
+keyless cosign signing, digest-pinned acceptance), tagged with the
+**otel-sqlite** sink version they pair with:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v /path/to/otel-logs.db:/data/otel-logs.db:ro \
+  ghcr.io/nicknad/otel-sqlite-explorer:0.4.0
+```
+
+The image opens the mounted database read-only and listens on `:8080`; the
+database must expose the `logs` view described under Prerequisites below.
+
 ### Prerequisites
 
 - Go 1.27+

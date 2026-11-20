@@ -1,0 +1,227 @@
+# Publish the multi-arch production image to GHCR.
+#
+# Mirrors otel-sqlite's release pipeline (the sink image this explorer pairs
+# with), adapted for the Go explorer:
+#   * per-arch native builds (no QEMU) on amd64 and arm64 runners;
+#   * trivy CVE gate before anything is pushed (fixable HIGH|CRITICAL block;
+#     reviewed exceptions in .trivyignore);
+#   * one merged manifest list tagged X.Y.Z, vX.Y.Z, X.Y and latest;
+#   * provenance + SBOM attestations (buildx) and keyless cosign signing;
+#   * acceptance on BOTH architectures pulling the published image by digest:
+#     zero-flag start over a generated fixture DB, health probe, SIGTERM drain.
+#
+# Release versioning: the tag tracks the latest otel-sqlite sink release the
+# explorer is compatible with (docs/CONTRACT.md section 5), so consumers pin
+# the image by sink compatibility rather than by explorer build number.
+
+name: Publish
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # cosign keyless signing via GitHub OIDC
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.4.0 (a leading v is accepted)"
+        required: true
+        type: string
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      minor: ${{ steps.version.outputs.minor }}
+      image: ${{ steps.version.outputs.image }}
+    steps:
+      - name: Resolve and validate the release version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW="${{ inputs.version }}"
+          else
+            RAW="${GITHUB_REF_NAME}"
+          fi
+          V="${RAW#v}"
+          if ! printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "error: release version must be X.Y.Z, got '$RAW'" >&2
+            exit 1
+          fi
+          MINOR="$(printf '%s' "$V" | cut -d. -f1-2)"
+          OWNER="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "version=$V"
+            echo "minor=$MINOR"
+            echo "image=ghcr.io/$OWNER/otel-sqlite-explorer"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE: ${{ needs.resolve.outputs.image }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up buildx builder
+        run: docker buildx create --use --name builder
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
+
+      - name: Build for CVE scanning (local, no attestations)
+        run: >
+          docker buildx build
+          --platform linux/${{ matrix.arch }}
+          --build-arg REVISION="${{ github.sha }}"
+          --pull
+          --cache-from type=gha --cache-to type=gha,mode=max
+          --load
+          --tag log-explorer-scan:latest .
+
+      - name: CVE gate (fixable HIGH|CRITICAL; exceptions in .trivyignore)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: log-explorer-scan:latest
+          scan-type: image
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          scanners: vuln
+          ignore: .trivyignore
+
+      - name: Push per-arch tag with provenance and SBOM attestations
+        run: >
+          docker buildx build
+          --platform linux/${{ matrix.arch }}
+          --build-arg REVISION="${{ github.sha }}"
+          --pull
+          --cache-from type=gha --cache-to type=gha,mode=max
+          --provenance=mode=max --sbom=true
+          --tag "${IMAGE}:${{ needs.resolve.outputs.version }}-${{ matrix.arch }}"
+          --push .
+
+  merge:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.digest.outputs.value }}
+    env:
+      IMAGE: ${{ needs.resolve.outputs.image }}
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
+
+      - name: Merge per-arch tags into one manifest list
+        run: >
+          docker buildx imagetools create
+          --tag "${IMAGE}:${{ needs.resolve.outputs.version }}"
+          --tag "${IMAGE}:v${{ needs.resolve.outputs.version }}"
+          --tag "${IMAGE}:${{ needs.resolve.outputs.minor }}"
+          --tag "${IMAGE}:latest"
+          "${IMAGE}:${{ needs.resolve.outputs.version }}-amd64"
+          "${IMAGE}:${{ needs.resolve.outputs.version }}-arm64"
+
+      - name: Record the merged digest
+        id: digest
+        run: |
+          DIGEST="$(docker buildx imagetools inspect --raw "${IMAGE}:${{ needs.resolve.outputs.version }}" | sha256sum | cut -d' ' -f1)"
+          echo "value=sha256:$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Release summary
+        run: |
+          {
+            echo "## Published ${IMAGE}:${{ needs.resolve.outputs.version }}"
+            echo
+            echo "Image version tracks the latest otel-sqlite sink release the"
+            echo "explorer is compatible with (schema 000-006, docs/CONTRACT.md)."
+            echo
+            echo 'Pin releases by digest:'
+            echo
+            echo '```'
+            echo "${IMAGE}@${{ steps.digest.outputs.value }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  sign:
+    needs: [resolve, merge]
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.resolve.outputs.image }}
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
+
+      - name: Keyless-sign the merged manifest by digest
+        run: cosign sign --yes "${IMAGE}@${{ needs.merge.outputs.digest }}"
+
+  acceptance:
+    needs: [resolve, merge]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE: ${{ needs.resolve.outputs.image }}
+      DIGEST: ${{ needs.merge.outputs.digest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
+
+      - name: Pull the published image by digest
+        run: docker pull "${IMAGE}@${DIGEST}"
+
+      - name: Acceptance (zero-flag start, health probe, SIGTERM drain)
+        run: |
+          set -euo pipefail
+          # Fixture database from the repo's own seeded generator (pure Go,
+          # no CGO); journal_mode=OFF, so a read-only file mount is enough.
+          go run ./cmd/mockdb -out /tmp/logs.db
+          # Zero-flag start: the image CMD already points at
+          # /data/otel-logs.db and listens on :8080.
+          docker run -d --name explorer \
+            -v /tmp/logs.db:/data/otel-logs.db:ro \
+            -p 127.0.0.1:8080:8080 \
+            "${IMAGE}@${DIGEST}"
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null
+          curl -fsS "http://127.0.0.1:8080/logs" -o /tmp/logs.html
+          grep -q "Log Explorer" /tmp/logs.html
+          # SIGTERM drain: graceful shutdown must exit cleanly.
+          docker kill --signal=SIGTERM explorer
+          code="$(timeout 15 docker wait explorer || echo timed-out)"
+          docker rm explorer >/dev/null
+          if [ "$code" != "0" ]; then
+            echo "error: explorer exited with $code after SIGTERM" >&2
+            exit 1
+          fi

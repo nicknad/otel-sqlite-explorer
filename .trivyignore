@@ -1,0 +1,6 @@
+# Trivy CVE-gate exceptions for the explorer release image.
+#
+# The release gate (publish.yml) fails on fixable HIGH|CRITICAL findings;
+# this file lists reviewed exceptions. It is empty by design: every entry
+# needs a CVE id, an expiry date, and a one-line justification, and must be
+# removed once the base image ships the fix. Mirrors otel-sqlite's gate.
